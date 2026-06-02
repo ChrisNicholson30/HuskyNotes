@@ -19,6 +19,8 @@ the user.
     for technical decisions).
   - [`resources/PLAN_OF_ACTION.md`](resources/PLAN_OF_ACTION.md) — sequenced,
     phased build plan with exit criteria.
+  - [`resources/BUILD_PLAN.md`](resources/BUILD_PLAN.md) — the engineering build
+    order: module contracts, the six themes, capabilities, per-version exit gates.
   - [`resources/GETTING_STARTED.md`](resources/GETTING_STARTED.md) — kickoff
     guide: resources/accounts needed and the concrete first steps.
 
@@ -92,10 +94,24 @@ let store = try ModelContainer(
 
 ### Build & test
 
-- No Xcode project exists yet (planning phase). Once scaffolded, the canonical
-  build/test commands and any required Apple Developer / CloudKit setup go here.
-- CloudKit requires an Apple Developer account, iCloud + CloudKit capabilities
-  on the target, and a configured private-database container.
+- The v0.1 source scaffold lives in `HuskyNotes/` (App, Models, Theme, Markdown,
+  Editor, Features, Export, Resources). The Xcode project is **generated** from
+  [`project.yml`](project.yml) with [XcodeGen](https://github.com/yonyz/XcodeGen)
+  (the `.xcodeproj` is git-ignored — never hand-edit it):
+
+  ```bash
+  brew install xcodegen          # one-time
+  xcodegen generate              # writes HuskyNotes.xcodeproj
+  open HuskyNotes.xcodeproj      # Xcode 16+/26; schemes: HuskyNotes-iOS, HuskyNotes-macOS
+  # CI-style build without signing:
+  xcodebuild -scheme HuskyNotes-macOS CODE_SIGNING_ALLOWED=NO build
+  ```
+
+- Only dependency is `apple/swift-markdown` (SPM, declared in `project.yml`).
+- CloudKit (v0.2) requires an Apple Developer account, iCloud + CloudKit
+  capabilities on the target, and a configured private-database container. The
+  switch is staged: `PersistenceController` has the `cloudKitDatabase: .private`
+  line ready and commented.
 
 ### When adding a feature
 

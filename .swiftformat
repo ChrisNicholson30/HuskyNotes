@@ -1,0 +1,29 @@
+# SwiftFormat configuration for Husky Notes
+
+--swiftversion 6.0
+--indent 4
+--maxwidth 120
+--tabwidth 4
+--linebreaks lf
+
+# Wrapping
+--wraparguments before-first
+--wrapparameters before-first
+--wrapcollections before-first
+--wrapconditions after-first
+--closingparen balanced
+
+# Style
+--commas inline
+--trailingclosures
+--semicolons never
+--self remove
+--importgrouping testable-bottom
+--header strip
+--stripunusedargs closure-only
+--ranges no-space
+--decimalgrouping 3,6
+--patternlet hoist
+
+# Excluded paths
+--exclude build,DerivedData,.build,.swiftpm,HuskyNotes.xcodeproj,Pods,Carthage

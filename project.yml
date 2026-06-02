@@ -1,0 +1,88 @@
+# XcodeGen spec for Husky Notes
+# Generate the Xcode project with:  xcodegen generate
+# (The generated HuskyNotes.xcodeproj is git-ignored.)
+#
+# One source folder (HuskyNotes/) feeds two app targets: iOS and macOS.
+# v0.1 is LOCAL ONLY. CloudKit entitlements are present but commented;
+# they get wired in v0.2.
+
+name: HuskyNotes
+
+options:
+  bundleIdPrefix: com.huskynotes
+  deploymentTarget:
+    iOS: "18.0"
+    macOS: "15.0"
+  createIntermediateGroups: true
+  generateEmptyDirectories: true
+
+# Shared Swift Package dependencies (apple/swift-markdown only).
+packages:
+  Markdown:
+    url: https://github.com/apple/swift-markdown
+    branch: main
+
+# Settings applied to every target.
+settingsGroups:
+  shared:
+    base:
+      SWIFT_VERSION: "6.0"
+      SWIFT_STRICT_CONCURRENCY: complete
+      ENABLE_USER_SCRIPT_SANDBOXING: YES
+      GENERATE_INFOPLIST_FILE: YES
+      INFOPLIST_KEY_CFBundleDisplayName: "Husky Notes"
+      MARKETING_VERSION: "0.1.0"
+      CURRENT_PROJECT_VERSION: "1"
+      # Automatic signing; CI overrides with CODE_SIGNING_ALLOWED=NO.
+      CODE_SIGN_STYLE: Automatic
+      SWIFT_EMIT_LOC_STRINGS: YES
+
+targets:
+  # ---------------------------------------------------------------- iOS app
+  HuskyNotes-iOS:
+    type: application
+    platform: iOS
+    deploymentTarget: "18.0"
+    sources:
+      - path: HuskyNotes
+    dependencies:
+      - package: Markdown
+        product: Markdown
+    settings:
+      groups:
+        - shared
+      base:
+        PRODUCT_NAME: "Husky Notes"
+        PRODUCT_BUNDLE_IDENTIFIER: com.huskynotes.app
+        TARGETED_DEVICE_FAMILY: "1,2" # iPhone + iPad
+        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_UISupportedInterfaceOrientations: "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
+        # CloudKit (v0.2): uncomment to enable iCloud + CloudKit entitlement.
+        # CODE_SIGN_ENTITLEMENTS: HuskyNotes/App/HuskyNotes.entitlements
+
+  # -------------------------------------------------------------- macOS app
+  HuskyNotes-macOS:
+    type: application
+    platform: macOS
+    deploymentTarget: "15.0"
+    sources:
+      - path: HuskyNotes
+    dependencies:
+      - package: Markdown
+        product: Markdown
+    settings:
+      groups:
+        - shared
+      base:
+        PRODUCT_NAME: "Husky Notes"
+        PRODUCT_BUNDLE_IDENTIFIER: com.huskynotes.app.mac
+        INFOPLIST_KEY_LSApplicationCategoryType: "public.app-category.productivity"
+        INFOPLIST_KEY_NSHumanReadableCopyright: "© 2026 Husky Notes. Free and open source."
+        # CloudKit (v0.2): uncomment to enable iCloud + CloudKit entitlement.
+        # CODE_SIGN_ENTITLEMENTS: HuskyNotes/App/HuskyNotes.entitlements
+
+# Note on Resources: the `HuskyNotes/Resources` folder (including
+# Themes/*.json and SampleNotes/*.md) is picked up by the recursive
+# `sources` glob above and bundled as a copy-resources phase by XcodeGen,
+# because .json / .md are non-source files.
