@@ -70,7 +70,7 @@ SwiftData models (Note, Tag, …)
         │
 CloudKit (.private) ─ silent, record-level, conflict-aware, offline-first
         │
-.md mirror (Husky Pro) ─ two-way sync to real files w/ YAML frontmatter
+.md mirror ─ two-way sync to real files w/ YAML frontmatter
 ```
 
 -----
@@ -96,11 +96,11 @@ Smart lists (Pinned, Today, Untagged, per-tag) are **computed**, not stored — 
 - [ ] Distraction-free focus mode
 - [ ] Theme engine — Blue Husky, Husky Day, Pine, Ember
 - [ ] `.md` export with YAML frontmatter
-- [ ] **Pro:** continuous two-way `.md` mirror
-- [ ] **Pro:** full theme editor / custom themes
-- [ ] **Pro:** per-note locking (Face ID / Touch ID app lock)
-- [ ] **Pro:** attachments & image handling
-- [ ] **Pro:** advanced export
+- [ ] Continuous two-way `.md` mirror
+- [ ] Full theme editor / custom themes
+- [ ] Per-note locking (Face ID / Touch ID app lock)
+- [ ] Attachments & image handling
+- [ ] Advanced export
 
 -----
 
@@ -113,14 +113,19 @@ Smart lists (Pinned, Today, Untagged, per-tag) are **computed**, not stored — 
 
 -----
 
-## Monetisation
+## Pricing
 
-One-time unlock model — no subscriptions.
+**Husky Notes is completely free.** No subscriptions, no one-time unlocks, no
+tiers, no paywalled features. Every capability — including the two-way `.md`
+mirror, full theme editor, per-note locking, attachments, and advanced export —
+ships to everyone at no cost.
 
-|Tier      |Price      |Includes                                                                                     |
-|----------|-----------|---------------------------------------------------------------------------------------------|
-|Husky Free|£0         |Editor, iCloud sync, tags/smart lists/search, `.md` export, Blue Husky + Husky Day themes    |
-|Husky Pro |£24.99 once|All Free + two-way `.md` mirror, theme editor, per-note locking, attachments, advanced export|
+|Edition|Price|Includes                                                              |
+|-------|-----|----------------------------------------------------------------------|
+|Husky  |£0   |**Everything** — editor, iCloud sync, tags/smart lists/search, `.md` export & two-way mirror, all themes + theme editor, per-note locking, attachments, advanced export|
+
+No ads, no tracking, no analytics on note content. Free as in price *and* free as
+in open source (MIT).
 
 -----
 

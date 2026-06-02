@@ -60,7 +60,7 @@ with a signature Blue Husky theme.**
 | Editor rendering     | **TextKit 2** (`NSTextView`/`UITextView` bridged)   | Live, themed inline rendering; far more control than `TextEditor` |
 | Theming              | Custom `Theme` model + environment injection        | Storage-independent; pure presentation layer |
 | Search               | SwiftData predicates + an FTS index (see §6)        | Instant full-text search at scale |
-| Distribution         | App Store (paid up-front or free + one-time unlock) | Solo-friendly; open-source repo, paid binary is fine |
+| Distribution         | App Store — **free, all features, no IAP**          | Open-source repo + free binary; every feature ships to everyone |
 
 ### Why not the alternatives
 
@@ -386,8 +386,10 @@ struct Theme: Codable, Identifiable {
 
 ## 12. Open decisions
 
-- **Pricing / licensing model.** Open-source repo + paid App Store binary? Or
-  free with a one-time "supporter" unlock? (Open-source ≠ free binary.)
+- ~~**Pricing / licensing model.**~~ **Resolved:** the app is completely free
+  with no tiers and no in-app purchases — every feature ships to everyone. MIT
+  open source. (Optional voluntary "tip jar" could be considered post-1.0, but
+  it never gates a feature.)
 - **Min OS floor.** iOS 18 lets us go all-in on SwiftData; dropping to iOS 17
   widens reach but adds Core Data fallbacks. Leaning iOS 18.
 - **Two-way mirror in scope for v1?** Currently store→files only for v1;

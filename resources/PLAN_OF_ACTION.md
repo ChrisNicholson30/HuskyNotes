@@ -97,30 +97,34 @@ exit criteria.
 - [ ] Attachments & image handling (CloudKit assets via external storage).
 - [ ] iPad pointer/keyboard polish; macOS menu commands.
 - [ ] Distraction-free focus mode.
-- [ ] App Store submission (one-time unlock — Free vs Pro tiers per README).
-- **Exit:** App Store build passes review; Free/Pro gating works.
+- [ ] App Store submission — **free, no in-app purchases, all features included**.
+- **Exit:** App Store build passes review; every feature is available to all users.
 
 ### Post-1.0
 - Opt-in E2EE, two-way mirror, plugins, web clipper, publishing.
 
 ---
 
-## 5. Tier gating (Free vs Pro)
+## 5. Pricing (free — no tiers)
 
-Per the README monetisation table — bake the gate in from v0.5 so Pro features
-are flagged as they land, not retrofitted.
+**Husky Notes is completely free, with every feature available to everyone.**
+There are no tiers, no in-app purchases, and no paywalled capabilities — so there
+is **no gating to build**. Everything below ships to all users:
 
-| Capability                      | Free | Pro |
-|---------------------------------|:----:|:---:|
-| Editor, iCloud sync, search     |  ✅  | ✅  |
-| Tags / smart lists              |  ✅  | ✅  |
-| `.md` export (one-shot)         |  ✅  | ✅  |
-| Blue Husky + Husky Day themes   |  ✅  | ✅  |
-| Continuous two-way `.md` mirror |  —   | ✅  |
-| Full theme editor / custom      |  —   | ✅  |
-| Per-note locking                |  —   | ✅  |
-| Attachments & image handling    |  —   | ✅  |
-| Advanced export                 |  —   | ✅  |
+| Capability                      | Included |
+|---------------------------------|:--------:|
+| Editor, iCloud sync, search     |    ✅    |
+| Tags / smart lists              |    ✅    |
+| `.md` export (one-shot)         |    ✅    |
+| All themes (Blue Husky, Husky Day, Pine, Ember) | ✅ |
+| Continuous two-way `.md` mirror |    ✅    |
+| Full theme editor / custom      |    ✅    |
+| Per-note locking                |    ✅    |
+| Attachments & image handling    |    ✅    |
+| Advanced export                 |    ✅    |
+
+Removing the tier split simplifies the build: no entitlement/receipt plumbing, no
+StoreKit, no feature flags to gate former-Pro features.
 
 ---
 
@@ -128,8 +132,8 @@ are flagged as they land, not retrofitted.
 
 Carried from `DESIGN.md §12` — each needs a call before the phase it gates.
 
-- [ ] **Pricing / licensing** — open-source repo + paid binary, or free + unlock?
-      *(blocks v1.0)*
+- [x] **Pricing / licensing** — *Resolved:* completely free, no tiers, no IAP,
+      every feature for everyone. MIT open source.
 - [ ] **Min OS floor** — iOS 18 (all-in SwiftData) vs iOS 17 (Core Data fallback).
       *(blocks v0.1 — leaning iOS 18)*
 - [ ] **Two-way mirror in v1?** — currently store→files only. *(blocks v0.4)*

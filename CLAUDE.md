@@ -109,7 +109,9 @@ let store = try ModelContainer(
 ## Conventions
 
 - Markdown content: CommonMark + GFM only.
-- Tier-gate Pro features behind a clear flag (Free vs Pro per README monetisation).
+- **The app is completely free** — no tiers, no in-app purchases, no paywalled
+  features. Do **not** add entitlement/receipt/StoreKit gating; every feature
+  ships to everyone.
 - Keep docs in sync: a change to architecture should update `DESIGN.md`; a change
   to scope/sequence should update `resources/PLAN_OF_ACTION.md`.
 
@@ -122,4 +124,5 @@ Update as the project matures:
 - [ ] Real build / run / test commands once the Xcode project exists.
 - [ ] Lint / format tooling (e.g. SwiftFormat / SwiftLint) config.
 - [ ] CI pipeline notes.
-- [ ] Resolved open decisions (min OS, pricing, two-way mirror, E2EE, wiki-links).
+- [ ] Resolved open decisions (min OS, two-way mirror, E2EE, wiki-links).
+      *(Pricing resolved: completely free, no tiers / IAP.)*
