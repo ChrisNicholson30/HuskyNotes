@@ -19,6 +19,8 @@ the user.
     for technical decisions).
   - [`resources/PLAN_OF_ACTION.md`](resources/PLAN_OF_ACTION.md) — sequenced,
     phased build plan with exit criteria.
+  - [`resources/GETTING_STARTED.md`](resources/GETTING_STARTED.md) — kickoff
+    guide: resources/accounts needed and the concrete first steps.
 
 > Note: this is a **separate project** from anything else that might share the
 > repo. Nothing here shares code or stack with other apps.

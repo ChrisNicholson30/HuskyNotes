@@ -157,7 +157,11 @@ A checklist item is "done" only when:
 
 ## 8. Immediate next steps
 
+> For the full kickoff checklist (accounts, hardware, tooling, learning
+> resources, and day-zero setup), see [`GETTING_STARTED.md`](GETTING_STARTED.md).
+
 1. Lock the **min OS floor** decision (iOS 18 vs 17).
-2. Scaffold the Xcode project + SwiftUI shell (v0.1, Workstream A).
-3. Stand up the TextKit 2 editor spike (v0.1, Workstream B).
-4. Keep this plan and `CLAUDE.md` updated as milestones land.
+2. Enrol in the Apple Developer Program (needed for CloudKit; has a lead time).
+3. Scaffold the Xcode project + SwiftUI shell (v0.1, Workstream A).
+4. Stand up the TextKit 2 editor spike (v0.1, Workstream B).
+5. Keep this plan and `CLAUDE.md` updated as milestones land.
