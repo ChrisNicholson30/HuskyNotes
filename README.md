@@ -1,8 +1,3 @@
-Husky Notes — App
-tags: [husky-notes, app, swiftui, swiftdata, cloudkit, readme]
-type: dev-readme
-status: planning
-
 # Husky Notes
 
 A native, open-source Markdown note-taking app for **iPhone, iPad and Mac**. Obsidian’s openness, Bear’s reliability, wrapped in a beautiful themeable editor. Every note is plain CommonMark — and always yours.
