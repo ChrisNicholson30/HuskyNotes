@@ -28,20 +28,27 @@ struct NoteEditorView: View {
     /// note's `Tag` relationship as the user types.
     @Environment(\.modelContext) private var modelContext
 
+    /// Used to widen the editor only on regular-width devices (iPad/Mac).
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+
     /// Debounce handle so we reconcile tags shortly after typing stops rather
     /// than on every keystroke (which would create tags for partial input).
     @State private var reconcileTask: Task<Void, Never>?
 
-    /// Focus-mode placeholder: when enabled, surrounding chrome is dimmed.
-    /// - TODO: Wire this to real distraction-free behaviour (hide sidebar /
-    ///   list columns, centre the text column) in a later milestone.
-    @State private var isFocusMode = false
+    /// Distraction-free focus mode, owned by ``RootView`` (which collapses the
+    /// sidebar and list columns). The toolbar button toggles it.
+    @Binding var isFocusMode: Bool
 
     /// Whether the user has authenticated to view this locked note this session.
     @State private var isUnlocked = false
 
     /// Whether the image importer is presented.
     @State private var isImportingImage = false
+
+    #if os(iOS)
+    /// The `.md` file currently being shared via the system share sheet.
+    @State private var shareFile: ShareFile?
+    #endif
 
     var body: some View {
         Group {
@@ -59,6 +66,10 @@ struct NoteEditorView: View {
     private var editor: some View {
         VStack(spacing: 0) {
             MarkdownEditor(text: bodyBinding, theme: theme)
+                // Cap the text column to a comfortable reading width on large
+                // (iPad/Mac) windows; fill edge-to-edge on compact iPhones.
+                .frame(maxWidth: readableWidth)
+                .frame(maxWidth: .infinity)
             if !(note.attachments ?? []).isEmpty {
                 AttachmentsBar(note: note)
             }
@@ -69,24 +80,35 @@ struct NoteEditorView: View {
         .navigationBarTitleDisplayMode(.inline)
         #endif
         .toolbar {
-            ToolbarItem {
-                Button { isImportingImage = true } label: {
-                    Label("Insert Image", systemImage: "photo.badge.plus")
+            // Hidden in focus mode for a distraction-free surface.
+            if !isFocusMode {
+                #if os(iOS)
+                ToolbarItem {
+                    Button { shareFile = ShareExport.makeMarkdownFile(for: note) } label: {
+                        Label("Share as Markdown", systemImage: "square.and.arrow.up")
+                    }
+                    .tint(theme.accent.swiftUIColor)
                 }
-                .tint(theme.accent.swiftUIColor)
-            }
-            ToolbarItem {
-                Button { toggleLock() } label: {
-                    Label(note.isLocked ? "Remove Lock" : "Lock Note",
-                          systemImage: note.isLocked ? "lock.fill" : "lock.open")
+                #endif
+                ToolbarItem {
+                    Button { isImportingImage = true } label: {
+                        Label("Insert Image", systemImage: "photo.badge.plus")
+                    }
+                    .tint(theme.accent.swiftUIColor)
                 }
-                .tint(theme.accent.swiftUIColor)
+                ToolbarItem {
+                    Button { toggleLock() } label: {
+                        Label(note.isLocked ? "Remove Lock" : "Lock Note",
+                              systemImage: note.isLocked ? "lock.fill" : "lock.open")
+                    }
+                    .tint(theme.accent.swiftUIColor)
+                }
             }
             ToolbarItem {
                 Button {
                     isFocusMode.toggle()
                 } label: {
-                    Label("Focus Mode",
+                    Label(isFocusMode ? "Exit Focus" : "Focus Mode",
                           systemImage: isFocusMode
                             ? "arrow.down.right.and.arrow.up.left"
                             : "arrow.up.left.and.arrow.down.right")
@@ -97,6 +119,11 @@ struct NoteEditorView: View {
         .fileImporter(isPresented: $isImportingImage, allowedContentTypes: [.image]) { result in
             if case .success(let url) = result { importImage(at: url) }
         }
+        #if os(iOS)
+        .sheet(item: $shareFile) { file in
+            ActivityView(url: file.url)
+        }
+        #endif
         .onChange(of: note.body) { _, _ in scheduleTagReconcile() }
         .onDisappear {
             flushTagReconcile()
@@ -117,6 +144,16 @@ struct NoteEditorView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(theme.background.swiftUIColor)
+    }
+
+    /// The editor's maximum content width. Capped on regular-width devices
+    /// (iPad/Mac) for readability; unbounded on compact iPhones.
+    private var readableWidth: CGFloat {
+        #if os(macOS)
+        return 760
+        #else
+        return horizontalSizeClass == .regular ? 760 : .infinity
+        #endif
     }
 
     // MARK: Locking

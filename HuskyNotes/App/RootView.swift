@@ -24,6 +24,10 @@ struct RootView: View {
     /// Sidebar column visibility, so the split view starts fully expanded.
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
 
+    /// Distraction-free focus mode: collapses the sidebar/list columns to leave
+    /// only the editor. Owned here because it drives `columnVisibility`.
+    @State private var isFocusMode = false
+
     /// Active theme supplies every colour.
     @Environment(ThemeStore.self) private var themeStore
     private var theme: Theme { themeStore.active }
@@ -41,7 +45,7 @@ struct RootView: View {
                 #endif
         } detail: {
             if let selectedNote {
-                NoteEditorView(note: selectedNote)
+                NoteEditorView(note: selectedNote, isFocusMode: $isFocusMode)
             } else {
                 emptyDetail
             }
@@ -49,6 +53,16 @@ struct RootView: View {
         .tint(theme.accent.swiftUIColor)
         // When the active list changes, clear a selection that no longer applies.
         .onChange(of: selectedList) { _, _ in selectedNote = nil }
+        // Focus mode hides the sidebar + list columns; exiting restores them.
+        .onChange(of: isFocusMode) { _, focused in
+            withAnimation(.easeInOut(duration: 0.2)) {
+                columnVisibility = focused ? .detailOnly : .all
+            }
+        }
+        // Leaving focus mode if no note is selected avoids a stuck collapsed state.
+        .onChange(of: selectedNote) { _, note in
+            if note == nil, isFocusMode { isFocusMode = false }
+        }
     }
 
     /// Placeholder shown in the detail column when no note is selected.

@@ -147,7 +147,10 @@ struct ThemeEditorView: View {
                 }
             }
         }
+        // Sized for the macOS sheet; iOS/iPadOS adapts to the presentation.
+        #if os(macOS)
         .frame(minWidth: 380, minHeight: 480)
+        #endif
     }
 
     /// A small live preview of body text, a heading and inline code.

@@ -1,15 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
-  iCloud / CloudKit entitlement for Husky Notes private-DB sync (v0.2).
-
-  This file is referenced by project.yml but the CODE_SIGN_ENTITLEMENTS line is
-  COMMENTED there so the app builds and runs locally with no developer team.
-  To turn on sync:
-    1. Enrol in the Apple Developer Program.
-    2. In project.yml, uncomment CODE_SIGN_ENTITLEMENTS for both targets.
-    3. Create the CloudKit container `iCloud.com.huskynotes.app`.
-    4. Toggle Settings → Storage → iCloud Sync and relaunch.
+  iCloud / CloudKit entitlement for the iOS / iPadOS app (private-DB sync).
+  iOS apps are always sandboxed by the OS, so no app-sandbox keys are needed.
 -->
 <plist version="1.0">
 <dict>
@@ -23,5 +16,9 @@
     </array>
     <key>com.apple.developer.ubiquity-kvstore-identifier</key>
     <string>$(TeamIdentifierPrefix)com.huskynotes.app</string>
+    <key>com.apple.security.application-groups</key>
+    <array>
+        <string>group.com.huskynotes.app</string>
+    </array>
 </dict>
 </plist>

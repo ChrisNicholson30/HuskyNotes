@@ -58,6 +58,24 @@ struct MarkdownEditor: UIViewRepresentable {
         textView.keyboardDismissMode = .interactive
 
         context.coordinator.textView = textView
+
+        // A scrollable formatting toolbar above the keyboard (iPhone/iPad), since
+        // the menu-bar Format commands only exist on macOS.
+        textView.inputAccessoryView = FormatAccessoryView(
+            onCommand: { [weak coordinator = context.coordinator] command in
+                coordinator?.perform(command)
+            },
+            onDone: { [weak textView] in textView?.resignFirstResponder() }
+        )
+
+        // Tap a rendered checkbox to toggle it (additive — doesn't block editing).
+        let tap = UITapGestureRecognizer(
+            target: context.coordinator,
+            action: #selector(Coordinator.handleCheckboxTap(_:))
+        )
+        tap.cancelsTouchesInView = false
+        textView.addGestureRecognizer(tap)
+
         // Open with the caret at the end so a freshly created "# " note is ready
         // to type the title into.
         let caret = NSRange(location: (text as NSString).length, length: 0)
@@ -100,7 +118,10 @@ struct MarkdownEditor: NSViewRepresentable {
 
     func makeNSView(context: Context) -> NSScrollView {
         // Force the TextKit 2 stack explicitly on macOS.
-        let textView = NSTextView(usingTextLayoutManager: true)
+        let textView = CheckboxTextView(usingTextLayoutManager: true)
+        textView.onCheckboxClick = { [weak coordinator = context.coordinator] index in
+            coordinator?.toggleCheckbox(atCharacterIndex: index) ?? false
+        }
         textView.delegate = context.coordinator
         textView.isRichText = false            // we own all styling
         textView.allowsUndo = true
@@ -148,6 +169,21 @@ struct MarkdownEditor: NSViewRepresentable {
         if textView.string != text || context.coordinator.styledTheme != theme {
             context.coordinator.apply(source: text, to: textView)
         }
+    }
+}
+
+/// An `NSTextView` that lets a click on a rendered checkbox toggle it before
+/// falling back to normal caret placement.
+final class CheckboxTextView: NSTextView {
+    /// Returns `true` if the click at the given character index toggled a
+    /// checkbox (and should be consumed).
+    var onCheckboxClick: ((Int) -> Bool)?
+
+    override func mouseDown(with event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        let index = characterIndexForInsertion(at: point)
+        if onCheckboxClick?(index) == true { return }
+        super.mouseDown(with: event)
     }
 }
 
@@ -259,7 +295,18 @@ extension MarkdownEditor {
                 isFirstResponder(textView),
                 let command = MarkdownCommand.from(notification)
             else { return }
+            perform(command, on: textView)
+        }
 
+        /// Applies a formatting command to this editor's text view. Used by the
+        /// iOS keyboard accessory toolbar (which targets this exact editor).
+        func perform(_ command: MarkdownCommand) {
+            guard let textView else { return }
+            perform(command, on: textView)
+        }
+
+        /// The shared formatting path: rewrite the source + selection and restyle.
+        private func perform(_ command: MarkdownCommand, on textView: PlatformTextView) {
             let result = MarkdownFormatting.apply(
                 command,
                 to: currentText(of: textView),
@@ -268,6 +315,53 @@ extension MarkdownEditor {
             text.wrappedValue = result.text
             apply(source: result.text, to: textView, selection: result.selection)
         }
+
+        /// Toggles the `[ ]` ↔ `[x]` checkbox on the line containing `index`, but
+        /// only when `index` is within the marker zone (so tapping the text body
+        /// doesn't toggle). Returns whether a toggle happened.
+        @discardableResult
+        func toggleCheckbox(atCharacterIndex index: Int) -> Bool {
+            guard let textView else { return false }
+            let ns = currentText(of: textView) as NSString
+            guard ns.length > 0, index >= 0, index <= ns.length else { return false }
+
+            let line = ns.lineRange(for: NSRange(location: min(index, ns.length - 1), length: 0))
+            let end = line.location + line.length
+
+            var i = line.location
+            while i < end, ns.character(at: i) == 32 || ns.character(at: i) == 9 { i += 1 }
+            guard i < end else { return false }
+            let bullet = ns.character(at: i)
+            guard bullet == 45 || bullet == 42 || bullet == 43 else { return false } // - * +
+            guard i + 4 < end,
+                  ns.character(at: i + 1) == 32,
+                  ns.character(at: i + 2) == 91,  // [
+                  ns.character(at: i + 4) == 93   // ]
+            else { return false }
+
+            let contentStart = i + 6
+            guard index < contentStart else { return false } // only the marker zone toggles
+
+            let markIndex = i + 3
+            let newMark = ns.character(at: markIndex) == 32 ? "x" : " "
+            let mutable = NSMutableString(string: ns)
+            mutable.replaceCharacters(in: NSRange(location: markIndex, length: 1), with: newMark)
+            let newText = mutable as String
+
+            text.wrappedValue = newText
+            apply(source: newText, to: textView, selection: currentSelection(of: textView))
+            return true
+        }
+
+        #if os(iOS)
+        @objc fileprivate func handleCheckboxTap(_ gesture: UITapGestureRecognizer) {
+            guard let textView = textView as? UITextView else { return }
+            let point = gesture.location(in: textView)
+            guard let position = textView.closestPosition(to: point) else { return }
+            let index = textView.offset(from: textView.beginningOfDocument, to: position)
+            toggleCheckbox(atCharacterIndex: index)
+        }
+        #endif
 
         // MARK: Platform accessors
 

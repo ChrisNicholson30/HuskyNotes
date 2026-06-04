@@ -9,6 +9,9 @@
 
 import SwiftUI
 import SwiftData
+#if os(macOS)
+import AppKit
+#endif
 
 /// The Husky Notes application.
 @main
@@ -17,6 +20,9 @@ struct HuskyNotesApp: App {
     /// The app-wide theme store. Owned here, injected into every view.
     @State private var themeStore = ThemeStore()
 
+    /// Drives draining the Share Extension inbox when the app becomes active.
+    @Environment(\.scenePhase) private var scenePhase
+
     var body: some Scene {
         WindowGroup {
             RootView()
@@ -24,6 +30,10 @@ struct HuskyNotesApp: App {
                 // Match the system appearance to the active theme so SwiftUI
                 // chrome (menus, alerts) reads correctly in light/dark themes.
                 .preferredColorScheme(themeStore.active.isDark ? .dark : .light)
+                .onAppear { drainSharedInbox() }
+                .onChange(of: scenePhase) { _, phase in
+                    if phase == .active { drainSharedInbox() }
+                }
         }
         .modelContainer(PersistenceController.shared.container)
         #if os(macOS)
@@ -34,6 +44,13 @@ struct HuskyNotesApp: App {
                     NotificationCenter.default.post(name: .huskyNewNote, object: nil)
                 }
                 .keyboardShortcut("n", modifiers: .command)
+            }
+
+            // Export lives in the File menu on macOS.
+            CommandGroup(replacing: .importExport) {
+                Button("Export All Notes…") { exportAllNotes() }
+                    .keyboardShortcut("e", modifiers: [.command, .shift])
+                Button("Export as Single File…") { exportCombinedNotes() }
             }
 
             // The Format menu — Bear-style text commands routed to the focused
@@ -97,6 +114,51 @@ struct HuskyNotesApp: App {
         }
         #endif
     }
+
+    /// Turns any pending Share Extension items (captured web pages) into notes,
+    /// then clears the inbox. No-ops where the App Group isn't available.
+    @MainActor
+    private func drainSharedInbox() {
+        let items = SharedInbox.load()
+        guard !items.isEmpty else { return }
+        let context = PersistenceController.shared.container.mainContext
+        for item in items {
+            let note = Note(body: item.markdown, createdAt: item.date, modifiedAt: item.date)
+            note.recomputeTitle()
+            context.insert(note)
+            TagReconciler.reconcile(note, in: context)
+        }
+        SharedInbox.clear()
+    }
+
+    #if os(macOS)
+    /// Prompts for a folder and exports every note as individual `.md` files.
+    @MainActor
+    private func exportAllNotes() {
+        guard let folder = chooseFolder() else { return }
+        let notes = (try? PersistenceController.shared.container.mainContext.fetch(FetchDescriptor<Note>())) ?? []
+        _ = MirrorService.export(notes, to: folder)
+    }
+
+    /// Prompts for a folder and exports all notes into one combined `.md` file.
+    @MainActor
+    private func exportCombinedNotes() {
+        guard let folder = chooseFolder() else { return }
+        let notes = (try? PersistenceController.shared.container.mainContext.fetch(FetchDescriptor<Note>())) ?? []
+        _ = MirrorService.exportCombined(notes, to: folder)
+    }
+
+    /// Shows an `NSOpenPanel` to pick a destination folder.
+    @MainActor
+    private func chooseFolder() -> URL? {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Export Here"
+        return panel.runModal() == .OK ? panel.url : nil
+    }
+    #endif
 }
 
 extension Notification.Name {

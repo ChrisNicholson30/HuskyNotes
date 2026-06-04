@@ -67,6 +67,8 @@ struct SidebarView: View {
         .sheet(isPresented: $showSettings) {
             SettingsView()
                 .environment(themeStore)
+                .presentationDetents([.medium, .large])
+                .presentationDragIndicator(.visible)
         }
         #endif
     }

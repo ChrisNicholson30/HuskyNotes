@@ -31,11 +31,15 @@ settingGroups:
       ENABLE_USER_SCRIPT_SANDBOXING: YES
       GENERATE_INFOPLIST_FILE: YES
       INFOPLIST_KEY_CFBundleDisplayName: "Husky Notes"
-      MARKETING_VERSION: "0.1.0"
-      CURRENT_PROJECT_VERSION: "1"
+      MARKETING_VERSION: "0.2.0"
+      CURRENT_PROJECT_VERSION: "2"
       # Automatic signing; CI overrides with CODE_SIGNING_ALLOWED=NO.
       CODE_SIGN_STYLE: Automatic
       SWIFT_EMIT_LOC_STRINGS: YES
+      # App icon from Assets.xcassets (populate via scripts/make-appicon.sh).
+      ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+      # Apple Developer Team ID — applies to BOTH the iOS and macOS targets.
+      DEVELOPMENT_TEAM: Y769NRY4KQ
 
 targets:
   # ---------------------------------------------------------------- iOS app
@@ -45,9 +49,12 @@ targets:
     deploymentTarget: "18.0"
     sources:
       - path: HuskyNotes
+      - path: Shared
     dependencies:
       - package: Markdown
         product: Markdown
+      - target: HuskyNotes-ShareExtension
+        embed: true
     settings:
       groups:
         - shared
@@ -58,8 +65,30 @@ targets:
         INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
         INFOPLIST_KEY_UISupportedInterfaceOrientations: "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
-        # CloudKit (v0.2): uncomment to enable iCloud + CloudKit entitlement.
-        # CODE_SIGN_ENTITLEMENTS: HuskyNotes/App/HuskyNotes.entitlements
+        # CloudKit + App Group entitlement (iOS-specific entitlements file).
+        CODE_SIGN_ENTITLEMENTS: HuskyNotes/App/HuskyNotes-iOS.entitlements
+
+  # ------------------------------------------------- iOS Share Extension
+  HuskyNotes-ShareExtension:
+    type: app-extension
+    platform: iOS
+    deploymentTarget: "18.0"
+    sources:
+      - path: ShareExtension
+      - path: Shared
+    settings:
+      base:
+        SWIFT_VERSION: "6.0"
+        SWIFT_STRICT_CONCURRENCY: complete
+        GENERATE_INFOPLIST_FILE: NO
+        INFOPLIST_FILE: ShareExtension/Info.plist
+        PRODUCT_NAME: ShareExtension
+        PRODUCT_BUNDLE_IDENTIFIER: com.huskynotes.app.ShareExtension
+        CODE_SIGN_ENTITLEMENTS: ShareExtension/ShareExtension.entitlements
+        CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: Y769NRY4KQ
+        MARKETING_VERSION: "0.2.0"
+        CURRENT_PROJECT_VERSION: "2"
 
   # -------------------------------------------------------------- macOS app
   HuskyNotes-macOS:
@@ -68,6 +97,7 @@ targets:
     deploymentTarget: "15.0"
     sources:
       - path: HuskyNotes
+      - path: Shared
     dependencies:
       - package: Markdown
         product: Markdown
@@ -79,8 +109,8 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.huskynotes.app.mac
         INFOPLIST_KEY_LSApplicationCategoryType: "public.app-category.productivity"
         INFOPLIST_KEY_NSHumanReadableCopyright: "© 2026 Husky Notes. Free and open source."
-        # CloudKit (v0.2): uncomment to enable iCloud + CloudKit entitlement.
-        # CODE_SIGN_ENTITLEMENTS: HuskyNotes/App/HuskyNotes.entitlements
+        # CloudKit: iCloud + CloudKit + App Sandbox (macOS-specific entitlements file).
+        CODE_SIGN_ENTITLEMENTS: HuskyNotes/App/HuskyNotes-macOS.entitlements
 
 # Note on Resources: the `HuskyNotes/Resources` folder (including
 # Themes/*.json and SampleNotes/*.md) is picked up by the recursive

@@ -23,7 +23,11 @@ struct SettingsView: View {
             NavigationStack { StorageSettingsView() }
                 .tabItem { Label("Storage", systemImage: "externaldrive") }
         }
+        // Fixed sizing only suits the macOS Settings *window*. On iOS/iPadOS the
+        // sheet must lay out fluidly to the device width, so no min frame there.
+        #if os(macOS)
         .frame(minWidth: 520, minHeight: 480)
+        #endif
     }
 }
 
@@ -38,7 +42,6 @@ struct StorageSettingsView: View {
     @State private var mirrorEnabled = MirrorService.isEnabled
     @State private var mirrorFolder = MirrorService.folderDisplayPath
     @State private var isChoosingMirrorFolder = false
-    @State private var isChoosingExportFolder = false
     @State private var statusMessage: String?
 
     var body: some View {
@@ -67,13 +70,14 @@ struct StorageSettingsView: View {
                         .font(.footnote)
                         .foregroundStyle(theme.textSecondary.swiftUIColor)
                 }
-                Text("One-way (store → files). Two-way mirror is a later milestone.")
+                Button("Import Changes from Folder") {
+                    let count = MirrorService.importChanges(context: modelContext)
+                    statusMessage = "Imported \(count) note\(count == 1 ? "" : "s") from the folder."
+                }
+                .disabled(mirrorFolder == nil)
+                Text("Mirror writes store → files; Import reads files → store (matched by id, newest wins). Continuous two-way watching is a later milestone.")
                     .font(.footnote)
                     .foregroundStyle(theme.textSecondary.swiftUIColor)
-            }
-
-            Section("Export") {
-                Button("Export All Notes…") { isChoosingExportFolder = true }
                 if let statusMessage {
                     Text(statusMessage)
                         .font(.footnote)
@@ -90,15 +94,6 @@ struct StorageSettingsView: View {
                 MirrorService.mirrorIfEnabled(context: modelContext)
             }
         }
-        .fileImporter(isPresented: $isChoosingExportFolder, allowedContentTypes: [.folder]) { result in
-            if case .success(let url) = result {
-                let didScope = url.startAccessingSecurityScopedResource()
-                defer { if didScope { url.stopAccessingSecurityScopedResource() } }
-                let notes = (try? modelContext.fetch(FetchDescriptor<Note>())) ?? []
-                let ok = MirrorService.export(notes, to: url)
-                statusMessage = ok ? "Exported \(notes.count) notes." : "Export failed."
-            }
-        }
     }
 
     /// Human-readable sync status line.
@@ -107,7 +102,7 @@ struct StorageSettingsView: View {
             return "Syncing via your private iCloud database."
         }
         if syncEnabled {
-            return "Enabled — relaunch to apply. Requires the iCloud entitlement and your CloudKit container (see HuskyNotes.entitlements)."
+            return "Enabled — relaunch to apply. Requires the iCloud entitlement and your CloudKit container."
         }
         return "Off — notes are stored locally on this device."
     }

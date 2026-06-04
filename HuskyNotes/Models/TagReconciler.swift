@@ -79,12 +79,17 @@ enum TagReconciler {
         }
         note.tags = newTags
 
-        prune(allTags + newTags, in: context)
+        // Prune only tags that are *not* among the ones we just assigned, so a
+        // freshly-attached tag can't be deleted if its inverse `notes`
+        // relationship hasn't propagated yet. We'd rather leave a rare orphan
+        // (cleaned up next pass) than drop a tag that's actually in use.
+        let keepIDs = Set(newTags.map(\.id))
+        prune(allTags, keeping: keepIDs, in: context)
     }
 
-    /// Deletes tags that no longer belong to any note.
-    private static func prune(_ tags: [Tag], in context: ModelContext) {
-        for tag in tags where (tag.notes ?? []).isEmpty {
+    /// Deletes tags with no remaining notes, except any whose id is in `keepIDs`.
+    private static func prune(_ tags: [Tag], keeping keepIDs: Set<UUID>, in context: ModelContext) {
+        for tag in tags where !keepIDs.contains(tag.id) && (tag.notes ?? []).isEmpty {
             context.delete(tag)
         }
     }

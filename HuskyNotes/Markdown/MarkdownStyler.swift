@@ -18,11 +18,32 @@ import Markdown
 import AppKit
 /// Platform font type bridged for cross-platform attributed-string styling.
 typealias PlatformFont = NSFont
+/// Platform image type bridged for cross-platform attachment glyphs.
+typealias PlatformImage = NSImage
 #else
 import UIKit
 /// Platform font type bridged for cross-platform attributed-string styling.
 typealias PlatformFont = UIFont
+/// Platform image type bridged for cross-platform attachment glyphs.
+typealias PlatformImage = UIImage
 #endif
+
+/// A rendered list marker (bullet or task checkbox) and the syntax it replaces.
+///
+/// Collected while walking the AST, then turned into an inline image glyph —
+/// unless the caret is on that line, where the raw Markdown stays visible so it
+/// remains editable (mirrors the syntax-concealment behaviour).
+private struct ListGlyph {
+    enum Kind { case bullet; case checkbox(checked: Bool) }
+    /// The single marker character that becomes the glyph (the `-`/`*`/`+`).
+    let markerRange: NSRange
+    /// Extra syntax to hide for task items (the ` [ ]` / ` [x]`), if any.
+    let concealRange: NSRange?
+    let kind: Kind
+    /// Whether to strike + dim the item's text (completed tasks).
+    let strikeContent: Bool
+    let contentRange: NSRange?
+}
 
 // MARK: - MarkdownStyler
 
@@ -75,12 +96,123 @@ struct MarkdownStyler {
         )
         visitor.visit(document)
 
+        // 2b. Footnotes: swift-markdown doesn't model them, so style references
+        //     and definitions with a small regex pass.
+        styleFootnotes(in: result, source: markdown, theme: theme, fonts: fonts)
+
         // 3. Concealment layer: hide marker ranges that don't intersect the
         //    revealed (active) line so the text reads like rendered Markdown
         //    everywhere except where the caret is.
         conceal(visitor.concealRanges, in: result, revealing: revealedRange)
 
+        // 4. List glyphs: render bullets and task checkboxes as inline images
+        //    (again, only off the active line so the raw syntax stays editable).
+        applyListGlyphs(visitor.listGlyphs, in: result, theme: theme, fonts: fonts, revealing: revealedRange)
+
         return result
+    }
+
+    /// Renders collected list markers as inline image glyphs (bullets / task
+    /// checkboxes) and hides the raw `- [ ]` syntax, except on the active line.
+    private func applyListGlyphs(
+        _ glyphs: [ListGlyph],
+        in target: NSMutableAttributedString,
+        theme: Theme,
+        fonts: FontSet,
+        revealing revealedRange: NSRange?
+    ) {
+        guard !glyphs.isEmpty else { return }
+        let length = target.length
+        let size = CGFloat(theme.bodySize)
+
+        for glyph in glyphs {
+            // Completed-task styling (strike + dim) applies on every line.
+            if glyph.strikeContent, let content = glyph.contentRange,
+               content.location >= 0, content.location + content.length <= length, content.length > 0 {
+                target.addAttribute(.strikethroughStyle, value: NSUnderlineStyle.single.rawValue, range: content)
+                target.addAttribute(.foregroundColor, value: theme.textSecondary.platformColor, range: content)
+            }
+
+            guard glyph.markerRange.location >= 0,
+                  glyph.markerRange.location + glyph.markerRange.length <= length
+            else { continue }
+
+            // Keep the raw markdown visible where the caret is, for editing.
+            if let revealedRange, NSIntersectionRange(glyph.markerRange, revealedRange).length > 0 {
+                continue
+            }
+
+            let image: PlatformImage?
+            switch glyph.kind {
+            case .bullet:
+                image = glyphImage(systemName: "circle.fill",
+                                   color: theme.textSecondary.platformColor,
+                                   pointSize: max(5, size * 0.42))
+            case .checkbox(let checked):
+                image = glyphImage(systemName: checked ? "checkmark.square.fill" : "square",
+                                   color: (checked ? theme.accent : theme.textSecondary).platformColor,
+                                   pointSize: size)
+            }
+
+            if let image {
+                let attachment = NSTextAttachment()
+                attachment.image = image
+                attachment.bounds = CGRect(x: 0, y: fonts.body.descender,
+                                           width: image.size.width, height: image.size.height)
+                target.addAttribute(.attachment, value: attachment, range: glyph.markerRange)
+            }
+
+            // Hide the " [ ]" task syntax (the kept trailing space separates the
+            // glyph from the text).
+            if let conceal = glyph.concealRange,
+               conceal.location >= 0, conceal.location + conceal.length <= length {
+                target.addAttributes(
+                    [.font: PlatformFont.systemFont(ofSize: 0.1),
+                     .foregroundColor: PlatformColor.clear,
+                     .backgroundColor: PlatformColor.clear],
+                    range: conceal
+                )
+            }
+        }
+    }
+
+    /// Styles footnote references (`[^1]`) as raised accent text and footnote
+    /// definition labels (`[^1]:` at line start) in the accent colour.
+    private func styleFootnotes(in target: NSMutableAttributedString, source: String, theme: Theme, fonts: FontSet) {
+        let ns = source as NSString
+        let full = NSRange(location: 0, length: ns.length)
+        let accent = theme.accent.platformColor
+
+        // References anywhere: [^id]
+        if let refs = try? NSRegularExpression(pattern: "\\[\\^[A-Za-z0-9_-]+\\]") {
+            let smaller = PlatformFont.systemFont(ofSize: max(9, CGFloat(theme.bodySize) * 0.75))
+            for match in refs.matches(in: source, range: full) {
+                target.addAttributes(
+                    [.foregroundColor: accent, .font: smaller, .baselineOffset: CGFloat(theme.bodySize) * 0.25],
+                    range: match.range
+                )
+            }
+        }
+        // Definition labels at line start: [^id]:
+        if let defs = try? NSRegularExpression(pattern: "(?m)^\\[\\^[A-Za-z0-9_-]+\\]:") {
+            for match in defs.matches(in: source, range: full) {
+                target.addAttribute(.foregroundColor, value: accent, range: match.range)
+            }
+        }
+    }
+
+    /// Creates a tinted SF Symbol image for an inline list glyph.
+    private func glyphImage(systemName: String, color: PlatformColor, pointSize: CGFloat) -> PlatformImage? {
+        #if os(macOS)
+        let config = NSImage.SymbolConfiguration(pointSize: pointSize, weight: .regular)
+            .applying(NSImage.SymbolConfiguration(paletteColors: [color]))
+        return NSImage(systemSymbolName: systemName, accessibilityDescription: nil)?
+            .withSymbolConfiguration(config)
+        #else
+        let config = UIImage.SymbolConfiguration(pointSize: pointSize, weight: .regular)
+        return UIImage(systemName: systemName, withConfiguration: config)?
+            .withTintColor(color, renderingMode: .alwaysOriginal)
+        #endif
     }
 
     /// Hides the given marker ranges by collapsing them to a near-zero, clear
@@ -263,6 +395,9 @@ private struct StylingVisitor: MarkupWalker {
     /// to be concealed unless the caret sits on their line.
     private(set) var concealRanges: [NSRange] = []
 
+    /// Collected list bullets / task checkboxes to render as inline glyphs.
+    private(set) var listGlyphs: [ListGlyph] = []
+
     /// UTF-8/Unicode offset cache mapping `SourceLocation` → `String.Index`.
     private let lineStarts: [Int]
 
@@ -317,6 +452,16 @@ private struct StylingVisitor: MarkupWalker {
             recordBlockQuoteMarkers(in: range)
         }
         descendInto(blockQuote)
+    }
+
+    /// GFM tables: render the whole block in the monospaced font so the pipe
+    /// columns line up (a true grid widget is a reading-mode concern).
+    mutating func visitTable(_ table: Markdown.Table) {
+        if let range = nsRange(for: table) {
+            target.addAttribute(.font, value: fonts.mono, range: range)
+            target.addAttribute(.foregroundColor, value: theme.textPrimary.platformColor, range: range)
+        }
+        descendInto(table)
     }
 
     // MARK: Inline elements
@@ -387,6 +532,54 @@ private struct StylingVisitor: MarkupWalker {
 
     mutating func visitOrderedList(_ orderedList: OrderedList) {
         descendInto(orderedList)
+    }
+
+    mutating func visitListItem(_ listItem: ListItem) {
+        if let range = nsRange(for: listItem) {
+            detectListMarker(in: range, checkbox: listItem.checkbox)
+        }
+        descendInto(listItem)
+    }
+
+    /// Locates a list item's leading marker (`-`/`*`/`+`, optionally a `[ ]`/`[x]`
+    /// task box) and records a ``ListGlyph`` for it. Ordered-list items are left
+    /// untouched (their numbers read fine as-is).
+    private mutating func detectListMarker(in range: NSRange, checkbox: Checkbox?) {
+        let end = range.location + range.length
+        var i = range.location
+        while i < end, ns.character(at: i) == 32 || ns.character(at: i) == 9 { i += 1 } // indent
+        guard i < end else { return }
+
+        let bullet = ns.character(at: i)
+        guard bullet == 45 || bullet == 42 || bullet == 43 else { return } // - * + only
+        let markerRange = NSRange(location: i, length: 1)
+
+        // Expect a single space after the bullet.
+        guard i + 1 < end, ns.character(at: i + 1) == 32 else {
+            listGlyphs.append(ListGlyph(markerRange: markerRange, concealRange: nil,
+                                        kind: .bullet, strikeContent: false, contentRange: nil))
+            return
+        }
+
+        if let checkbox {
+            // Pattern: bullet, space, '[', mark, ']', space, content
+            let open = i + 2, close = i + 4
+            guard close < end, ns.character(at: open) == 91, ns.character(at: close) == 93 else {
+                listGlyphs.append(ListGlyph(markerRange: markerRange, concealRange: nil,
+                                            kind: .bullet, strikeContent: false, contentRange: nil))
+                return
+            }
+            let checked = (checkbox == .checked)
+            let conceal = NSRange(location: i + 1, length: 4) // " [ ]" — keep the next space
+            let contentStart = min(i + 6, end)
+            let content = NSRange(location: contentStart, length: end - contentStart)
+            listGlyphs.append(ListGlyph(markerRange: markerRange, concealRange: conceal,
+                                        kind: .checkbox(checked: checked),
+                                        strikeContent: checked, contentRange: content))
+        } else {
+            listGlyphs.append(ListGlyph(markerRange: markerRange, concealRange: nil,
+                                        kind: .bullet, strikeContent: false, contentRange: nil))
+        }
     }
 
     // MARK: Trait merging

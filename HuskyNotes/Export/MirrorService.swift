@@ -55,13 +55,18 @@ enum MirrorService {
         defaults.removeObject(forKey: bookmarkKey)
     }
 
-    /// Mirrors all non-trashed notes to the chosen folder, if mirroring is on and
-    /// a folder is set. Safe to call frequently (e.g. after edits) — it's a
-    /// straight re-export. Returns silently if disabled or unconfigured.
+    /// Mirrors notes to the chosen folder, if mirroring is on and a folder is
+    /// set. **Locked notes are excluded** so their plaintext never lands in the
+    /// mirror folder. Safe to call frequently (e.g. after edits). Returns
+    /// silently if disabled or unconfigured.
+    ///
+    /// - Note: A note locked *after* it was already mirrored leaves its earlier
+    ///   `.md` on disk — this skips future writes but doesn't delete existing
+    ///   files. A sweep that removes stale/locked files is a later refinement.
     static func mirrorIfEnabled(context: ModelContext) {
         guard isEnabled, let folder = resolveFolder() else { return }
         let notes = (try? context.fetch(FetchDescriptor<Note>())) ?? []
-        export(notes, to: folder)
+        export(notes.filter { !$0.isLocked }, to: folder)
     }
 
     /// Performs a one-shot export of `notes` to `folder` (used by mirroring and
@@ -76,6 +81,75 @@ enum MirrorService {
         } catch {
             return false
         }
+    }
+
+    /// Exports all non-trashed notes into a single combined `.md` file
+    /// (advanced export). Returns the number of notes written, or nil on failure.
+    @discardableResult
+    static func exportCombined(_ notes: [Note], to folder: URL) -> Int? {
+        let didScope = folder.startAccessingSecurityScopedResource()
+        defer { if didScope { folder.stopAccessingSecurityScopedResource() } }
+        let included = notes.filter { !$0.isTrashed }
+        let body = included
+            .map { frontmatter(for: $0) + "\n\n" + $0.body }
+            .joined(separator: "\n\n\n")
+        let url = folder.appendingPathComponent("HuskyNotes-Combined.md")
+        do {
+            try body.write(to: url, atomically: true, encoding: .utf8)
+            return included.count
+        } catch {
+            return nil
+        }
+    }
+
+    /// Two-way import: reads the `.md` files in the mirror folder and reconciles
+    /// them back into the store, matching by frontmatter `id`. Newer files (by
+    /// the frontmatter `modified` date) overwrite the note; unknown ids create
+    /// new notes. Manual + last-write-wins — a safe step toward full two-way
+    /// sync without a background file watcher.
+    ///
+    /// - Returns: the number of notes created or updated.
+    @discardableResult
+    static func importChanges(context: ModelContext) -> Int {
+        guard let folder = resolveFolder() else { return 0 }
+        let didScope = folder.startAccessingSecurityScopedResource()
+        defer { if didScope { folder.stopAccessingSecurityScopedResource() } }
+
+        let allNotes = (try? context.fetch(FetchDescriptor<Note>())) ?? []
+        var byID: [UUID: Note] = [:]
+        for note in allNotes { byID[note.id] = note }
+
+        var changed = 0
+        let enumerator = FileManager.default.enumerator(at: folder, includingPropertiesForKeys: nil)
+        while let url = enumerator?.nextObject() as? URL {
+            guard url.pathExtension.lowercased() == "md" else { continue }
+            guard let text = try? String(contentsOf: url, encoding: .utf8) else { continue }
+            let parsed = Frontmatter.parseDocument(text)
+            guard let frontmatter = parsed.frontmatter else { continue } // only id'd notes
+
+            if let existing = byID[frontmatter.id] {
+                if frontmatter.modified > existing.modifiedAt, existing.body != parsed.body {
+                    existing.body = parsed.body
+                    existing.modifiedAt = frontmatter.modified
+                    existing.recomputeTitle()
+                    TagReconciler.reconcile(existing, in: context)
+                    changed += 1
+                }
+            } else {
+                let note = Note(
+                    id: frontmatter.id,
+                    body: parsed.body,
+                    createdAt: frontmatter.created,
+                    modifiedAt: frontmatter.modified,
+                    isPinned: frontmatter.pinned
+                )
+                note.recomputeTitle()
+                context.insert(note)
+                TagReconciler.reconcile(note, in: context)
+                changed += 1
+            }
+        }
+        return changed
     }
 
     /// Resolves the saved bookmark back into a usable folder URL.
