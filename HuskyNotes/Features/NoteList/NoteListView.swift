@@ -23,6 +23,9 @@ struct NoteListView: View {
     /// The selected note, shared with the editor (detail) column.
     @Binding var selection: Note?
 
+    /// Live search text (composable `#tag text` query).
+    @State private var searchText: String = ""
+
     /// SwiftData context for inserting / mutating notes.
     @Environment(\.modelContext) private var modelContext
 
@@ -52,6 +55,7 @@ struct NoteListView: View {
                     .contextMenu {
                         pinButton(note)
                         archiveButton(note)
+                        lockButton(note)
                         Divider()
                         trashButton(note)
                     }
@@ -67,8 +71,14 @@ struct NoteListView: View {
                     Label("New Note", systemImage: "square.and.pencil")
                 }
                 .tint(theme.accent.swiftUIColor)
+                .keyboardShortcut("n", modifiers: .command)
             }
         }
+        // Honour the macOS "New Note" menu command (⌘N).
+        .onReceive(NotificationCenter.default.publisher(for: .huskyNewNote)) { _ in
+            addNote()
+        }
+        .searchable(text: $searchText, prompt: "Search — try #tag text")
         .overlay {
             if filteredNotes.isEmpty {
                 ContentUnavailableView {
@@ -83,9 +93,10 @@ struct NoteListView: View {
 
     // MARK: Filtering
 
-    /// Notes matching the active ``SmartList``.
+    /// Notes matching the active ``SmartList`` and the current search query.
     private var filteredNotes: [Note] {
-        allNotes.filter { matches($0) }
+        let scoped = allNotes.filter { matches($0) }
+        return NoteSearch.filter(scoped, searchText)
     }
 
     /// Whether a note belongs in the current filter.
@@ -113,9 +124,11 @@ struct NoteListView: View {
 
     // MARK: Actions
 
-    /// Inserts a fresh, empty note and selects it for editing.
+    /// Inserts a fresh note pre-seeded with an empty H1 header (so every new
+    /// note starts as a titled heading, Bear-style) and selects it for editing.
     private func addNote() {
-        let note = Note()
+        let note = Note(body: "# ")
+        note.recomputeTitle()
         modelContext.insert(note)
         selection = note
     }
@@ -150,6 +163,18 @@ struct NoteListView: View {
             togglePin(note)
         } label: {
             Label(note.isPinned ? "Unpin" : "Pin", systemImage: note.isPinned ? "pin.slash" : "pin")
+        }
+        .tint(theme.accent.swiftUIColor)
+    }
+
+    @ViewBuilder
+    private func lockButton(_ note: Note) -> some View {
+        Button {
+            note.isLocked.toggle()
+            note.modifiedAt = Date()
+        } label: {
+            Label(note.isLocked ? "Remove Lock" : "Lock",
+                  systemImage: note.isLocked ? "lock.open" : "lock")
         }
         .tint(theme.accent.swiftUIColor)
     }

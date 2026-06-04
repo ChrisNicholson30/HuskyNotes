@@ -40,8 +40,16 @@ struct MarkdownStyler {
     ///   - markdown: The CommonMark + GFM source. This is the canonical text and
     ///     is reproduced character-for-character in the output.
     ///   - theme: The active theme supplying every colour, font and metric.
+    ///   - revealedRange: The character range (typically the paragraph the caret
+    ///     is in) whose syntax markers should stay visible. Markers outside it
+    ///     are concealed, Bear-style. Pass `nil` to conceal every marker (the
+    ///     fully "rendered" look when the editor isn't focused).
     /// - Returns: An `NSAttributedString` whose visible string equals `markdown`.
-    func attributedString(for markdown: String, theme: Theme) -> NSAttributedString {
+    func attributedString(
+        for markdown: String,
+        theme: Theme,
+        revealing revealedRange: NSRange? = nil
+    ) -> NSAttributedString {
         let fonts = FontSet(theme: theme)
 
         // 1. Base layer: the whole text in body style. Guarantees that any range
@@ -55,7 +63,9 @@ struct MarkdownStyler {
 
         // 2. Decoration layer: walk the AST and overlay attributes onto the
         //    source ranges of each element. Source-range mapping keeps the
-        //    visible characters untouched (live source styling).
+        //    visible characters untouched (live source styling). The visitor also
+        //    collects the ranges of syntax *markers* (e.g. the `#`, `**`, `` ` ``)
+        //    so we can hide them.
         let document = Document(parsing: markdown, options: [.parseBlockDirectives])
         var visitor = StylingVisitor(
             source: markdown,
@@ -65,7 +75,36 @@ struct MarkdownStyler {
         )
         visitor.visit(document)
 
+        // 3. Concealment layer: hide marker ranges that don't intersect the
+        //    revealed (active) line so the text reads like rendered Markdown
+        //    everywhere except where the caret is.
+        conceal(visitor.concealRanges, in: result, revealing: revealedRange)
+
         return result
+    }
+
+    /// Hides the given marker ranges by collapsing them to a near-zero, clear
+    /// run — unless they intersect `revealedRange`, in which case they stay
+    /// visible. The backing string is never modified, so the source round-trips.
+    private func conceal(_ ranges: [NSRange], in target: NSMutableAttributedString, revealing revealedRange: NSRange?) {
+        guard !ranges.isEmpty else { return }
+        let length = target.length
+        let hiddenFont = PlatformFont.systemFont(ofSize: 0.1)
+        let clear = PlatformColor.clear
+
+        for range in ranges {
+            guard range.length > 0,
+                  range.location >= 0,
+                  range.location + range.length <= length
+            else { continue }
+            if let revealedRange, NSIntersectionRange(range, revealedRange).length > 0 {
+                continue // caret is on this line — keep the markers visible.
+            }
+            target.addAttributes(
+                [.font: hiddenFont, .foregroundColor: clear, .backgroundColor: clear],
+                range: range
+            )
+        }
     }
 
     /// Default attributes applied to the entire document before decoration.
@@ -216,6 +255,14 @@ private struct StylingVisitor: MarkupWalker {
     let theme: Theme
     let fonts: FontSet
 
+    /// The source as an `NSString`, for UTF-16 marker scanning that matches the
+    /// attributed string's range semantics.
+    private let ns: NSString
+
+    /// Collected ranges of syntax markers (e.g. `#`, `**`, `` ` ``, `[`…`](…)`),
+    /// to be concealed unless the caret sits on their line.
+    private(set) var concealRanges: [NSRange] = []
+
     /// UTF-8/Unicode offset cache mapping `SourceLocation` → `String.Index`.
     private let lineStarts: [Int]
 
@@ -224,6 +271,7 @@ private struct StylingVisitor: MarkupWalker {
         self.target = target
         self.theme = theme
         self.fonts = fonts
+        self.ns = source as NSString
         self.lineStarts = StylingVisitor.computeLineStarts(in: source)
     }
 
@@ -233,6 +281,7 @@ private struct StylingVisitor: MarkupWalker {
         if let range = nsRange(for: heading) {
             applyFontPreservingTraits(fonts.heading(level: heading.level), over: range)
             target.addAttribute(.foregroundColor, value: theme.heading.platformColor, range: range)
+            recordHeadingMarker(in: range)
         }
         descendInto(heading)
     }
@@ -265,6 +314,7 @@ private struct StylingVisitor: MarkupWalker {
                 ],
                 range: range
             )
+            recordBlockQuoteMarkers(in: range)
         }
         descendInto(blockQuote)
     }
@@ -281,12 +331,14 @@ private struct StylingVisitor: MarkupWalker {
                 ],
                 range: range
             )
+            recordBacktickMarkers(in: range)
         }
     }
 
     mutating func visitStrong(_ strong: Strong) {
         if let range = nsRange(for: strong) {
             mergeTrait(.bold, over: range)
+            recordPairedDelimiters(in: range, length: 2) // ** or __
         }
         descendInto(strong)
     }
@@ -294,6 +346,7 @@ private struct StylingVisitor: MarkupWalker {
     mutating func visitEmphasis(_ emphasis: Emphasis) {
         if let range = nsRange(for: emphasis) {
             mergeTrait(.italic, over: range)
+            recordPairedDelimiters(in: range, length: 1) // * or _
         }
         descendInto(emphasis)
     }
@@ -306,6 +359,7 @@ private struct StylingVisitor: MarkupWalker {
                 range: range
             )
             target.addAttribute(.foregroundColor, value: theme.textSecondary.platformColor, range: range)
+            recordPairedDelimiters(in: range, length: 2) // ~~
         }
         descendInto(strikethrough)
     }
@@ -320,6 +374,7 @@ private struct StylingVisitor: MarkupWalker {
                 ],
                 range: range
             )
+            recordLinkMarkers(in: range)
         }
         descendInto(link)
     }
@@ -376,6 +431,76 @@ private struct StylingVisitor: MarkupWalker {
         #else
         return font.fontDescriptor.symbolicTraits.contains(.traitItalic)
         #endif
+    }
+
+    // MARK: Marker collection (for concealment)
+
+    /// Records the fixed-length opening and closing delimiters of an inline span
+    /// (e.g. the `**` of `**bold**`, the `*` of `*italic*`).
+    private mutating func recordPairedDelimiters(in range: NSRange, length: Int) {
+        guard range.length >= length * 2 else { return }
+        concealRanges.append(NSRange(location: range.location, length: length))
+        concealRanges.append(NSRange(location: range.location + range.length - length, length: length))
+    }
+
+    /// Records the leading `#`…`#` run plus trailing spaces of an ATX heading.
+    private mutating func recordHeadingMarker(in range: NSRange) {
+        let end = range.location + range.length
+        var i = range.location
+        var hashes = 0
+        while i < end, ns.character(at: i) == 35 /* # */, hashes < 6 { i += 1; hashes += 1 }
+        guard hashes > 0 else { return }
+        while i < end {
+            let c = ns.character(at: i)
+            if c == 32 || c == 9 { i += 1 } else { break } // space / tab
+        }
+        concealRanges.append(NSRange(location: range.location, length: i - range.location))
+    }
+
+    /// Records the leading and trailing backtick runs of inline code.
+    private mutating func recordBacktickMarkers(in range: NSRange) {
+        let end = range.location + range.length
+        var leading = range.location
+        while leading < end, ns.character(at: leading) == 96 /* ` */ { leading += 1 }
+        let leadCount = leading - range.location
+        guard leadCount > 0 else { return }
+        var trailing = end
+        while trailing > leading, ns.character(at: trailing - 1) == 96 { trailing -= 1 }
+        concealRanges.append(NSRange(location: range.location, length: leadCount))
+        if end - trailing > 0 {
+            concealRanges.append(NSRange(location: trailing, length: end - trailing))
+        }
+    }
+
+    /// Records a link's bracket/destination syntax (`[` … `](url)`), leaving the
+    /// visible link text intact.
+    private mutating func recordLinkMarkers(in range: NSRange) {
+        guard range.length >= 2, ns.character(at: range.location) == 91 /* [ */ else { return }
+        let close = ns.range(of: "](", options: [], range: range)
+        guard close.location != NSNotFound else { return }
+        concealRanges.append(NSRange(location: range.location, length: 1)) // leading [
+        let tailStart = close.location
+        concealRanges.append(NSRange(location: tailStart, length: range.location + range.length - tailStart))
+    }
+
+    /// Records the `>` (and one trailing space) quote prefix on each line of a
+    /// block quote so the prose reads cleanly with just the indent + bar.
+    private mutating func recordBlockQuoteMarkers(in range: NSRange) {
+        let end = range.location + range.length
+        var lineStart = range.location
+        while lineStart < end {
+            var i = lineStart
+            while i < end, ns.character(at: i) == 32 || ns.character(at: i) == 9 { i += 1 }
+            if i < end, ns.character(at: i) == 62 /* > */ {
+                var markerEnd = i + 1
+                if markerEnd < end, ns.character(at: markerEnd) == 32 { markerEnd += 1 }
+                concealRanges.append(NSRange(location: lineStart, length: markerEnd - lineStart))
+            }
+            let rest = NSRange(location: lineStart, length: end - lineStart)
+            let newline = ns.range(of: "\n", options: [], range: rest)
+            if newline.location == NSNotFound { break }
+            lineStart = newline.location + 1
+        }
     }
 
     // MARK: Source-range → NSRange mapping

@@ -48,6 +48,27 @@ struct HexColor: Codable, Hashable, Sendable {
         self.hex = Self.normalise(raw)
     }
 
+    /// Create a `HexColor` from `0...1` RGB components (used by the theme editor's
+    /// colour pickers).
+    init(red: Double, green: Double, blue: Double) {
+        func channel(_ value: Double) -> Int { Int((min(max(value, 0), 1) * 255).rounded()) }
+        self.hex = String(format: "#%02X%02X%02X", channel(red), channel(green), channel(blue))
+    }
+
+    /// Create a `HexColor` from a SwiftUI `Color` by resolving it through the
+    /// platform colour in the sRGB space.
+    init(_ color: Color) {
+        let platform = PlatformColor(color)
+        #if os(macOS)
+        let rgb = platform.usingColorSpace(.sRGB) ?? platform
+        self.init(red: Double(rgb.redComponent), green: Double(rgb.greenComponent), blue: Double(rgb.blueComponent))
+        #else
+        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+        platform.getRed(&r, green: &g, blue: &b, alpha: &a)
+        self.init(red: Double(r), green: Double(g), blue: Double(b))
+        #endif
+    }
+
     // MARK: Codable
 
     /// Decodes from a bare JSON string (e.g. `"accent": "#3DA9FC"`).

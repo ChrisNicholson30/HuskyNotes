@@ -39,6 +39,9 @@ final class Note {
     /// When the note was moved to the trash, if applicable.
     var trashedAt: Date? = nil
 
+    /// Whether the note is locked behind device biometrics (Face ID / Touch ID).
+    var isLocked: Bool = false
+
     /// Tags applied to this note. Denormalised from the body and recomputed on save.
     @Relationship(deleteRule: .nullify, inverse: \Tag.notes)
     var tags: [Tag]? = []
@@ -58,7 +61,8 @@ final class Note {
         isPinned: Bool = false,
         isArchived: Bool = false,
         isTrashed: Bool = false,
-        trashedAt: Date? = nil
+        trashedAt: Date? = nil,
+        isLocked: Bool = false
     ) {
         self.id = id
         self.title = title
@@ -69,6 +73,7 @@ final class Note {
         self.isArchived = isArchived
         self.isTrashed = isTrashed
         self.trashedAt = trashedAt
+        self.isLocked = isLocked
     }
 
     /// Recomputes ``title`` from the first non-empty line of ``body``.

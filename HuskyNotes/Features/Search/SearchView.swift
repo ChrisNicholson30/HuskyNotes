@@ -44,7 +44,7 @@ struct SearchView: View {
         .background(theme.background.swiftUIColor)
         .tint(theme.accent.swiftUIColor)
         .navigationTitle("Search")
-        .searchable(text: $query, prompt: "Search notes")
+        .searchable(text: $query, prompt: "Search notes — try #tag text")
         .overlay {
             if !query.isEmpty && results.isEmpty {
                 ContentUnavailableView.search(text: query)
@@ -53,13 +53,8 @@ struct SearchView: View {
         }
     }
 
-    /// Notes whose title or body contains the (case-insensitive) query.
+    /// Notes matching the composable `#tag text` query.
     private var results: [Note] {
-        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return notes }
-        return notes.filter {
-            $0.title.localizedCaseInsensitiveContains(trimmed)
-                || $0.body.localizedCaseInsensitiveContains(trimmed)
-        }
+        NoteSearch.filter(notes, query)
     }
 }

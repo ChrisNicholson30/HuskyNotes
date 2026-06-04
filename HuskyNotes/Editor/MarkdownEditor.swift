@@ -57,7 +57,11 @@ struct MarkdownEditor: UIViewRepresentable {
         textView.textContainerInset = UIEdgeInsets(top: 16, left: 12, bottom: 16, right: 12)
         textView.keyboardDismissMode = .interactive
 
-        context.coordinator.apply(source: text, to: textView)
+        context.coordinator.textView = textView
+        // Open with the caret at the end so a freshly created "# " note is ready
+        // to type the title into.
+        let caret = NSRange(location: (text as NSString).length, length: 0)
+        context.coordinator.apply(source: text, to: textView, selection: caret)
         return textView
     }
 
@@ -121,7 +125,11 @@ struct MarkdownEditor: NSViewRepresentable {
         scrollView.drawsBackground = true
         scrollView.backgroundColor = theme.background.platformColor
 
-        context.coordinator.apply(source: text, to: textView)
+        context.coordinator.textView = textView
+        // Open with the caret at the end so a freshly created "# " note is ready
+        // to type the title into.
+        let caret = NSRange(location: (text as NSString).length, length: 0)
+        context.coordinator.apply(source: text, to: textView, selection: caret)
         return scrollView
     }
 
@@ -164,36 +172,61 @@ extension MarkdownEditor {
         /// theme switch requires a full re-style even if the text is unchanged.
         private(set) var styledTheme: Theme?
 
+        /// The text view this coordinator drives; used to apply menu commands and
+        /// to restyle on selection changes. Weak to avoid a retain cycle.
+        weak var textView: PlatformTextView?
+
+        /// Guards against re-entrant restyling: programmatically setting the
+        /// selection during `apply` itself fires selection-change callbacks.
+        private var isApplying = false
+
         /// The styler that turns Markdown source into a themed attributed string.
         private let styler = MarkdownStyler()
 
         init(text: Binding<String>, theme: Theme) {
             self.text = text
             self.theme = theme
+            super.init()
+            NotificationCenter.default.addObserver(
+                self,
+                selector: #selector(handleFormatCommand(_:)),
+                name: .huskyFormatCommand,
+                object: nil
+            )
         }
 
-        /// Re-styles `source` and writes the result into the text view's storage,
-        /// preserving the current selection so the caret does not jump.
+        deinit {
+            NotificationCenter.default.removeObserver(self)
+        }
+
+        /// Re-styles `source` into the text view, revealing the syntax markers on
+        /// the line that contains `selection` (defaulting to the view's current
+        /// selection) and restoring that selection afterwards.
         ///
-        /// This is the single funnel for mutating the displayed attributed text;
-        /// both initial load and post-edit restyles go through it.
-        func apply(source: String, to textView: PlatformTextView) {
-            let styled = styler.attributedString(for: source, theme: theme)
+        /// This is the single funnel for mutating the displayed attributed text:
+        /// initial load, post-edit restyle, caret-move reveal, and menu commands
+        /// all route through it.
+        func apply(source: String, to textView: PlatformTextView, selection: NSRange? = nil) {
+            isApplying = true
+            defer { isApplying = false }
+
+            let length = (source as NSString).length
+            let desired = clampedSelection(selection ?? currentSelection(of: textView), length: length)
+            let revealed = revealedRange(in: source, for: desired)
+            let styled = styler.attributedString(for: source, theme: theme, revealing: revealed)
 
             #if os(iOS)
             let storage = textView.textStorage
-            let previousSelection = textView.selectedRange
             storage.beginEditing()
             storage.setAttributedString(styled)
             storage.endEditing()
-            textView.selectedRange = clampedSelection(previousSelection, length: styled.length)
+            textView.selectedRange = clampedSelection(desired, length: styled.length)
             #elseif os(macOS)
             guard let storage = textView.textStorage else { return }
-            let previousSelection = textView.selectedRange()
             storage.beginEditing()
             storage.setAttributedString(styled)
             storage.endEditing()
-            textView.setSelectedRange(clampedSelection(previousSelection, length: styled.length))
+            textView.setSelectedRange(clampedSelection(desired, length: styled.length))
             #endif
 
             styledTheme = theme
@@ -202,22 +235,82 @@ extension MarkdownEditor {
         /// Pulls the current text out of the view, publishes it to the binding,
         /// then re-styles in place. Called from the text-did-change delegate.
         fileprivate func handleTextChanged(_ textView: PlatformTextView) {
-            #if os(iOS)
-            let current = textView.text ?? ""
-            #elseif os(macOS)
-            let current = textView.string
-            #endif
-
-            // Publish the new source to SwiftUI state first.
+            let current = currentText(of: textView)
             if text.wrappedValue != current {
                 text.wrappedValue = current
             }
-            // Re-decorate the freshly edited text, keeping the caret put.
+            // Don't restyle mid-composition (IME marked text) — it would tear
+            // down the in-progress glyphs. The final commit restyles.
+            guard !hasMarkedText(textView) else { return }
             apply(source: current, to: textView)
         }
 
-        /// Clamps a previously captured selection range to the bounds of the new
-        /// text length so restyling never produces an out-of-range selection.
+        /// Re-conceals/reveals markers when the caret moves to a different line.
+        fileprivate func handleSelectionChanged(_ textView: PlatformTextView) {
+            guard !isApplying, !hasMarkedText(textView) else { return }
+            apply(source: currentText(of: textView), to: textView)
+        }
+
+        /// Applies a formatting command broadcast from the `Format` menu — but
+        /// only to the editor that is currently first responder.
+        @objc private func handleFormatCommand(_ notification: Notification) {
+            guard
+                let textView,
+                isFirstResponder(textView),
+                let command = MarkdownCommand.from(notification)
+            else { return }
+
+            let result = MarkdownFormatting.apply(
+                command,
+                to: currentText(of: textView),
+                selection: currentSelection(of: textView)
+            )
+            text.wrappedValue = result.text
+            apply(source: result.text, to: textView, selection: result.selection)
+        }
+
+        // MARK: Platform accessors
+
+        private func currentText(of textView: PlatformTextView) -> String {
+            #if os(iOS)
+            return textView.text ?? ""
+            #else
+            return textView.string
+            #endif
+        }
+
+        private func currentSelection(of textView: PlatformTextView) -> NSRange {
+            #if os(iOS)
+            return textView.selectedRange
+            #else
+            return textView.selectedRange()
+            #endif
+        }
+
+        private func isFirstResponder(_ textView: PlatformTextView) -> Bool {
+            #if os(iOS)
+            return textView.isFirstResponder
+            #else
+            return textView.window?.firstResponder === textView
+            #endif
+        }
+
+        private func hasMarkedText(_ textView: PlatformTextView) -> Bool {
+            #if os(iOS)
+            return textView.markedTextRange != nil
+            #else
+            return textView.hasMarkedText()
+            #endif
+        }
+
+        /// The paragraph range containing `selection`; its markers stay revealed.
+        private func revealedRange(in source: String, for selection: NSRange) -> NSRange? {
+            let ns = source as NSString
+            guard ns.length > 0 else { return nil }
+            return ns.paragraphRange(for: clampedSelection(selection, length: ns.length))
+        }
+
+        /// Clamps a selection range to the bounds of a string of `length`.
         private func clampedSelection(_ range: NSRange, length: Int) -> NSRange {
             let location = min(max(range.location, 0), length)
             let maxLen = length - location
@@ -234,12 +327,21 @@ extension MarkdownEditor.Coordinator: UITextViewDelegate {
     func textViewDidChange(_ textView: UITextView) {
         handleTextChanged(textView)
     }
+
+    func textViewDidChangeSelection(_ textView: UITextView) {
+        handleSelectionChanged(textView)
+    }
 }
 #elseif os(macOS)
 extension MarkdownEditor.Coordinator: NSTextViewDelegate {
     func textDidChange(_ notification: Notification) {
         guard let textView = notification.object as? NSTextView else { return }
         handleTextChanged(textView)
+    }
+
+    func textViewDidChangeSelection(_ notification: Notification) {
+        guard let textView = notification.object as? NSTextView else { return }
+        handleSelectionChanged(textView)
     }
 }
 #endif

@@ -28,6 +28,9 @@ struct SidebarView: View {
     /// Convenience accessor for the resolved active theme.
     private var theme: Theme { themeStore.active }
 
+    /// Whether the settings sheet is presented (iOS/iPadOS; macOS uses ⌘,).
+    @State private var showSettings = false
+
     var body: some View {
         List(selection: $selection) {
             Section {
@@ -53,6 +56,19 @@ struct SidebarView: View {
         .background(theme.surface.swiftUIColor)
         .tint(theme.accent.swiftUIColor)
         .navigationTitle("Husky Notes")
+        #if os(iOS)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button { showSettings = true } label: {
+                    Label("Settings", systemImage: "gearshape")
+                }
+            }
+        }
+        .sheet(isPresented: $showSettings) {
+            SettingsView()
+                .environment(themeStore)
+        }
+        #endif
     }
 
     /// A single themed sidebar row for the given smart list.

@@ -19,21 +19,67 @@ struct ThemeSettingsView: View {
     /// The currently active theme (drives the page's own chrome).
     private var theme: Theme { themeStore.active }
 
+    /// The theme draft currently open in the editor sheet, if any.
+    @State private var editing: ThemeDraft?
+
     /// Adaptive grid of theme cards.
     private let columns = [GridItem(.adaptive(minimum: 150), spacing: 16)]
 
     var body: some View {
         ScrollView {
+            HStack {
+                Text("Themes")
+                    .font(.title3.weight(.semibold))
+                    .foregroundStyle(theme.textPrimary.swiftUIColor)
+                Spacer()
+                Button {
+                    editing = ThemeDraft(theme: themeStore.duplicate(themeStore.active))
+                } label: {
+                    Label("New from Active", systemImage: "plus")
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(theme.accent.swiftUIColor)
+            }
+            .padding([.horizontal, .top])
+
             LazyVGrid(columns: columns, spacing: 16) {
                 ForEach(themeStore.themes) { candidate in
                     card(for: candidate)
                         .onTapGesture { themeStore.select(candidate.id) }
+                        .contextMenu { menu(for: candidate) }
                 }
             }
             .padding()
         }
         .background(theme.background.swiftUIColor)
         .navigationTitle("Themes")
+        .sheet(item: $editing) { draft in
+            ThemeEditorView(draft: draft)
+                .environment(themeStore)
+        }
+    }
+
+    /// The per-card context menu: duplicate (any theme) plus edit/delete for
+    /// user themes (built-ins are read-only).
+    @ViewBuilder
+    private func menu(for candidate: Theme) -> some View {
+        Button {
+            editing = ThemeDraft(theme: themeStore.duplicate(candidate))
+        } label: {
+            Label("Duplicate & Edit", systemImage: "plus.square.on.square")
+        }
+        if !themeStore.isBuiltIn(candidate.id) {
+            Button {
+                editing = ThemeDraft(theme: candidate)
+            } label: {
+                Label("Edit", systemImage: "pencil")
+            }
+            Button(role: .destructive) {
+                themeStore.deleteCustom(candidate.id)
+            } label: {
+                Label("Delete", systemImage: "trash")
+            }
+        }
     }
 
     /// A single tappable theme card showing four swatches and the name.

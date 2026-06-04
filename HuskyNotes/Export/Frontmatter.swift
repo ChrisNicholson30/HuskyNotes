@@ -35,13 +35,11 @@ struct Frontmatter: Equatable, Sendable {
     /// The fence delimiter used to open and close a frontmatter block.
     static let fence = "---"
 
-    /// A shared ISO8601 formatter (UTC, no fractional seconds) for timestamps.
-    private static let iso8601: ISO8601DateFormatter = {
-        let f = ISO8601DateFormatter()
-        f.formatOptions = [.withInternetDateTime]
-        f.timeZone = TimeZone(identifier: "UTC")
-        return f
-    }()
+    /// The ISO8601 format style used for timestamps (UTC, no fractional seconds).
+    ///
+    /// `Date.ISO8601FormatStyle` is `Sendable` (unlike `ISO8601DateFormatter`),
+    /// so it is safe to share from a `static` under Swift 6 strict concurrency.
+    private static let iso8601 = Date.ISO8601FormatStyle(timeZone: TimeZone(identifier: "UTC")!)
 }
 
 // MARK: - Encoding
@@ -65,8 +63,8 @@ extension Frontmatter {
     var yaml: String {
         var lines: [String] = [Self.fence]
         lines.append("id: \(id.uuidString)")
-        lines.append("created: \(Self.iso8601.string(from: created))")
-        lines.append("modified: \(Self.iso8601.string(from: modified))")
+        lines.append("created: \(Self.iso8601.format(created))")
+        lines.append("modified: \(Self.iso8601.format(modified))")
         lines.append("tags: \(Self.encodeTagList(tags))")
         lines.append("pinned: \(pinned ? "true" : "false")")
         lines.append(Self.fence)
@@ -170,9 +168,9 @@ extension Frontmatter {
             case "id":
                 idValue = UUID(uuidString: unquote(raw))
             case "created":
-                if let d = iso8601.date(from: unquote(raw)) { created = d }
+                if let d = try? iso8601.parse(unquote(raw)) { created = d }
             case "modified":
-                if let d = iso8601.date(from: unquote(raw)) { modified = d }
+                if let d = try? iso8601.parse(unquote(raw)) { modified = d }
             case "tags":
                 tags = parseTagList(raw)
             case "pinned":

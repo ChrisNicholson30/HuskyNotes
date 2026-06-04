@@ -28,12 +28,24 @@ struct NoteRow: View {
             }
 
             VStack(alignment: .leading, spacing: 3) {
-                Text(displayTitle)
-                    .font(.headline)
-                    .lineLimit(1)
-                    .foregroundStyle(theme.textPrimary.swiftUIColor)
+                HStack(spacing: 4) {
+                    if note.isLocked {
+                        Image(systemName: "lock.fill")
+                            .font(.caption2)
+                            .foregroundStyle(theme.textSecondary.swiftUIColor)
+                    }
+                    Text(displayTitle)
+                        .font(.headline)
+                        .lineLimit(1)
+                        .foregroundStyle(theme.textPrimary.swiftUIColor)
+                }
 
-                if !snippet.isEmpty {
+                // Hide the body preview for locked notes (privacy).
+                if note.isLocked {
+                    Text("Locked")
+                        .font(.subheadline)
+                        .foregroundStyle(theme.textSecondary.swiftUIColor)
+                } else if !snippet.isEmpty {
                     Text(snippet)
                         .font(.subheadline)
                         .lineLimit(1)

@@ -23,7 +23,7 @@ packages:
     branch: main
 
 # Settings applied to every target.
-settingsGroups:
+settingGroups:
   shared:
     base:
       SWIFT_VERSION: "6.0"

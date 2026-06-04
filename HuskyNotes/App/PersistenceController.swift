@@ -20,39 +20,55 @@ import SwiftData
 /// tests (an in-memory container seeded with sample notes).
 struct PersistenceController {
 
-    /// The container used by the live app (on-disk, local-only for v0.1).
+    /// The container used by the live app.
     static let shared = PersistenceController()
 
     /// The SwiftData container backing the whole app.
     let container: ModelContainer
+
+    /// Whether the container is mirroring to CloudKit (sync on) or local-only.
+    let isSyncing: Bool
+
+    /// The CloudKit container identifier for the private database.
+    static let cloudKitContainerID = "iCloud.com.huskynotes.app"
+
+    /// UserDefaults key toggling iCloud sync (read at launch; relaunch to apply).
+    static let syncEnabledKey = "huskynotes.syncEnabled"
 
     /// The full schema: every `@Model` type the app persists.
     private static let schema = Schema([Note.self, Tag.self, Attachment.self])
 
     /// Creates a container.
     ///
+    /// When iCloud sync is enabled (Settings → Storage) **and** the app is built
+    /// with the iCloud/CloudKit entitlement + container, the store mirrors to the
+    /// user's *private* CloudKit database. If the cloud container can't be
+    /// created (no entitlement, not signed into iCloud, etc.) we fall back to a
+    /// local store so the app always launches.
+    ///
     /// - Parameter inMemory: when `true`, nothing is written to disk — used for
     ///   previews and tests.
     init(inMemory: Bool = false) {
-        // v0.1 — local store only.
-        let configuration = ModelConfiguration(
-            schema: Self.schema,
-            isStoredInMemoryOnly: inMemory
-        )
+        let local = ModelConfiguration(schema: Self.schema, isStoredInMemoryOnly: inMemory)
+        let wantsSync = !inMemory && UserDefaults.standard.bool(forKey: Self.syncEnabledKey)
 
-        // v0.2 — flip to CloudKit private-DB sync by replacing the line above with:
-        //
-        //   let configuration = ModelConfiguration(
-        //       schema: Self.schema,
-        //       isStoredInMemoryOnly: inMemory,
-        //       cloudKitDatabase: .private("iCloud.com.huskynotes.app")
-        //   )
-        //
-        // (also requires the iCloud + CloudKit capability and container — see
-        //  resources/BUILD_PLAN.md §5 v0.2.)
+        if wantsSync {
+            let cloud = ModelConfiguration(
+                schema: Self.schema,
+                isStoredInMemoryOnly: false,
+                cloudKitDatabase: .private(Self.cloudKitContainerID)
+            )
+            if let container = try? ModelContainer(for: Self.schema, configurations: [cloud]) {
+                self.container = container
+                self.isSyncing = true
+                return
+            }
+            // Couldn't stand up the cloud store — fall back to local below.
+        }
 
         do {
-            container = try ModelContainer(for: Self.schema, configurations: [configuration])
+            container = try ModelContainer(for: Self.schema, configurations: [local])
+            isSyncing = false
         } catch {
             // A container we cannot create is unrecoverable; fail loudly in dev.
             fatalError("Failed to create ModelContainer: \(error)")
