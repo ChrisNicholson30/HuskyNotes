@@ -50,7 +50,15 @@ struct PersistenceController {
     ///   previews and tests.
     init(inMemory: Bool = false) {
         let local = ModelConfiguration(schema: Self.schema, isStoredInMemoryOnly: inMemory)
-        let wantsSync = !inMemory && UserDefaults.standard.bool(forKey: Self.syncEnabledKey)
+
+        // Only attempt CloudKit when the user enabled it AND an iCloud identity is
+        // actually available. The identity token is non-nil only when the app has
+        // the iCloud entitlement and the user is signed in — so this avoids the
+        // async `NSCloudKitMirroringDelegate` setup trapping on unsigned builds,
+        // simulators with no iCloud account, or a misconfigured container.
+        let wantsSync = !inMemory
+            && UserDefaults.standard.bool(forKey: Self.syncEnabledKey)
+            && FileManager.default.ubiquityIdentityToken != nil
 
         if wantsSync {
             let cloud = ModelConfiguration(
