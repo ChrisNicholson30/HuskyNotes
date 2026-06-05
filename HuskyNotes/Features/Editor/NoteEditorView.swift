@@ -9,6 +9,11 @@
 
 import SwiftUI
 import UniformTypeIdentifiers
+#if os(iOS)
+import PhotosUI
+#elseif os(macOS)
+import AppKit
+#endif
 
 /// Edits a single ``Note`` using the themed TextKit 2 ``MarkdownEditor``.
 ///
@@ -35,9 +40,17 @@ struct NoteEditorView: View {
     /// than on every keystroke (which would create tags for partial input).
     @State private var reconcileTask: Task<Void, Never>?
 
+    /// Handle to the live editor, so imports can insert a reference at the caret.
+    @State private var editorController = EditorController()
+
     /// Distraction-free focus mode, owned by ``RootView`` (which collapses the
     /// sidebar and list columns). The toolbar button toggles it.
     @Binding var isFocusMode: Bool
+
+    /// The id of a freshly-created note to auto-focus. When it matches this
+    /// note, the editor focuses and (on iOS) raises the keyboard, then clears it
+    /// so re-opening the note later doesn't pop the keyboard again.
+    @Binding var autoFocusNoteID: UUID?
 
     /// Whether the user has authenticated to view this locked note this session.
     @State private var isUnlocked = false
@@ -45,8 +58,23 @@ struct NoteEditorView: View {
     /// Whether the note is shown as a rendered, read-only view (tables, etc.).
     @State private var isReading = false
 
-    /// Whether the image importer is presented.
+    /// The attachment being previewed from an inline tap in reading mode.
+    @State private var previewingAttachment: Attachment?
+
+    #if os(iOS)
+    /// Drives the photo-library picker (iOS adds photos from Photos, not Files).
+    @State private var isPickingPhoto = false
+    /// The photo chosen from the library, pending import.
+    @State private var pickedPhoto: PhotosPickerItem?
+    /// Whether the document scanner (camera) is presented.
+    @State private var isScanning = false
+    #else
+    /// Whether the image file importer is presented (macOS picks image files).
     @State private var isImportingImage = false
+    #endif
+
+    /// Whether the any-file importer is presented (PDFs and other documents).
+    @State private var isImportingFile = false
 
     #if os(iOS)
     /// The `.md` file currently being shared via the system share sheet.
@@ -62,7 +90,20 @@ struct NoteEditorView: View {
             }
         }
         // Re-lock when switching to a different note or leaving the editor.
-        .onChange(of: note.id) { _, _ in isUnlocked = false }
+        .onChange(of: note.id) { _, _ in
+            isUnlocked = false
+            focusIfNewlyCreated()
+        }
+    }
+
+    /// Focuses the editor (and raises the keyboard on iOS) only for a note that
+    /// was *just created* — matched by ``autoFocusNoteID`` — then clears the flag
+    /// so re-opening the note later won't pop the keyboard. Opening existing
+    /// notes never auto-focuses.
+    private func focusIfNewlyCreated() {
+        guard !note.isLocked, autoFocusNoteID == note.id else { return }
+        autoFocusNoteID = nil
+        DispatchQueue.main.async { editorController.focus() }
     }
 
     /// The editor itself, plus the attachments strip and toolbar.
@@ -70,17 +111,26 @@ struct NoteEditorView: View {
         VStack(spacing: 0) {
             if isReading {
                 ScrollView {
-                    MarkdownReadingView(markdown: note.body, theme: theme)
+                    MarkdownReadingView(
+                        markdown: note.body,
+                        theme: theme,
+                        attachments: note.attachments ?? [],
+                        onOpenAttachment: { previewingAttachment = $0 }
+                    )
                         .padding()
                         .frame(maxWidth: readableWidth, alignment: .leading)
-                        .frame(maxWidth: .infinity, alignment: .center)
+                        // Hug the leading edge (a small document gutter) rather
+                        // than centring the column in the middle of a wide window.
+                        .frame(maxWidth: .infinity, alignment: .leading)
                 }
             } else {
-                MarkdownEditor(text: bodyBinding, theme: theme)
+                MarkdownEditor(text: bodyBinding, theme: theme, controller: editorController)
                     // Cap the text column to a comfortable reading width on large
                     // (iPad/Mac) windows; fill edge-to-edge on compact iPhones.
-                    .frame(maxWidth: readableWidth)
-                    .frame(maxWidth: .infinity)
+                    // Left-aligned so the text starts near the leading edge, not
+                    // floating in the centre of a wide pane.
+                    .frame(maxWidth: readableWidth, alignment: .leading)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 if !(note.attachments ?? []).isEmpty {
                     AttachmentsBar(note: note)
                 }
@@ -94,20 +144,50 @@ struct NoteEditorView: View {
         .toolbar {
             // Hidden in focus mode for a distraction-free surface.
             if !isFocusMode {
-                #if os(iOS)
                 ToolbarItem {
-                    Button { shareFile = ShareExport.makeMarkdownFile(for: note) } label: {
-                        Label("Share as Markdown", systemImage: "square.and.arrow.up")
+                    Menu {
+                        #if os(iOS)
+                        Button { shareFile = ShareExport.makeMarkdownFile(for: note) } label: {
+                            Label("Share as Markdown", systemImage: "doc.plaintext")
+                        }
+                        #endif
+                        Button { exportPDF() } label: {
+                            Label("Export as PDF…", systemImage: "doc.richtext")
+                        }
+                        Button { printNote() } label: {
+                            Label("Print…", systemImage: "printer")
+                        }
+                    } label: {
+                        Label("Share", systemImage: "square.and.arrow.up")
                     }
                     .tint(theme.accent.swiftUIColor)
                 }
-                #endif
                 ToolbarItem {
-                    Button { isImportingImage = true } label: {
+                    Button {
+                        #if os(iOS)
+                        isPickingPhoto = true
+                        #else
+                        isImportingImage = true
+                        #endif
+                    } label: {
                         Label("Insert Image", systemImage: "photo.badge.plus")
                     }
                     .tint(theme.accent.swiftUIColor)
                 }
+                ToolbarItem {
+                    Button { isImportingFile = true } label: {
+                        Label("Insert File", systemImage: "doc.badge.plus")
+                    }
+                    .tint(theme.accent.swiftUIColor)
+                }
+                #if os(iOS)
+                ToolbarItem {
+                    Button { isScanning = true } label: {
+                        Label("Scan Document", systemImage: "doc.viewfinder")
+                    }
+                    .tint(theme.accent.swiftUIColor)
+                }
+                #endif
                 ToolbarItem {
                     Button { toggleLock() } label: {
                         Label(note.isLocked ? "Remove Lock" : "Lock Note",
@@ -137,15 +217,48 @@ struct NoteEditorView: View {
                 .tint(theme.accent.swiftUIColor)
             }
         }
+        #if os(iOS)
+        // Photos come from the photo library (not Files). PHPicker is
+        // out-of-process, so it needs no photo-library permission prompt.
+        .photosPicker(isPresented: $isPickingPhoto, selection: $pickedPhoto, matching: .images)
+        .onChange(of: pickedPhoto) { _, item in
+            guard let item else { return }
+            pickedPhoto = nil
+            importPhoto(item)
+        }
+        #else
         .fileImporter(isPresented: $isImportingImage, allowedContentTypes: [.image]) { result in
-            if case .success(let url) = result { importImage(at: url) }
+            if case .success(let url) = result { importAttachment(at: url) }
+        }
+        #endif
+        .fileImporter(isPresented: $isImportingFile, allowedContentTypes: [.pdf, .data]) { result in
+            if case .success(let url) = result { importAttachment(at: url) }
         }
         #if os(iOS)
         .sheet(item: $shareFile) { file in
             ActivityView(url: file.url)
         }
+        .fullScreenCover(isPresented: $isScanning) {
+            DocumentScannerView { data in handleScan(data) }
+                .ignoresSafeArea()
+        }
         #endif
+        // Tapping an inline image/PDF/file in reading mode opens the full viewer.
+        .sheet(item: $previewingAttachment) { attachment in
+            AttachmentViewer(attachment: attachment)
+                .environment(themeStore)
+        }
         .onChange(of: note.body) { _, _ in scheduleTagReconcile() }
+        #if os(macOS)
+        // File ▸ Print (⌘P) routes here so it prints the open note rather than
+        // hitting AppKit's unhandled-print alert. Locked, un-viewed notes are
+        // skipped so content can't be printed without unlocking.
+        .onReceive(NotificationCenter.default.publisher(for: .huskyPrintNote)) { _ in
+            guard !(note.isLocked && !isUnlocked) else { return }
+            printNote()
+        }
+        #endif
+        .onAppear { focusIfNewlyCreated() }
         .onDisappear {
             flushTagReconcile()
             isUnlocked = false
@@ -198,21 +311,101 @@ struct NoteEditorView: View {
         }
     }
 
+    // MARK: Export & print
+
+    /// Exports the note's rendered Markdown as a PDF (matching Read mode). On iOS
+    /// it routes the file through the share sheet; on macOS it shows a save panel.
+    private func exportPDF() {
+        #if os(iOS)
+        guard let url = PDFRenderer.pdfFile(for: note, theme: theme) else { return }
+        shareFile = ShareFile(url: url)
+        #else
+        guard let data = PDFRenderer.pdfData(for: note, theme: theme) else { return }
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.pdf]
+        let base = MarkdownExporter.sanitise(note.title.isEmpty ? "Untitled" : note.title)
+        panel.nameFieldStringValue = "\(base).pdf"
+        if panel.runModal() == .OK, let url = panel.url {
+            try? data.write(to: url, options: .atomic)
+        }
+        #endif
+    }
+
+    /// Opens the system print dialog for the note's rendered Markdown.
+    private func printNote() {
+        PrintService.print(note: note, theme: theme)
+    }
+
     // MARK: Attachments
 
-    /// Imports an image file as an `Attachment` owned by this note.
-    private func importImage(at url: URL) {
+    #if os(iOS)
+    /// Imports a photo chosen from the library. The picker hands back opaque
+    /// `Data`; we stage it in a temp file (so the UTI/extension resolve) and run
+    /// it through the shared attachment path — which inserts the embed at the
+    /// caret, same as any other attachment.
+    private func importPhoto(_ item: PhotosPickerItem) {
+        Task { @MainActor in
+            guard let data = try? await item.loadTransferable(type: Data.self) else { return }
+            let ext = item.supportedContentTypes.first?.preferredFilenameExtension ?? "jpg"
+            let name = "Photo-\(Int(Date().timeIntervalSince1970)).\(ext)"
+            let url = FileManager.default.temporaryDirectory.appendingPathComponent(name)
+            guard (try? data.write(to: url)) != nil else { return }
+            importAttachment(at: url)
+            try? FileManager.default.removeItem(at: url)
+        }
+    }
+
+    /// Handles a finished document scan: writes the assembled PDF to a temp file
+    /// and runs it through the shared attachment path (which embeds it and OCRs it).
+    private func handleScan(_ data: Data?) {
+        guard let data else { return }
+        let name = "Scan-\(Int(Date().timeIntervalSince1970)).pdf"
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(name)
+        guard (try? data.write(to: url)) != nil else { return }
+        importAttachment(at: url)
+        try? FileManager.default.removeItem(at: url)
+    }
+    #endif
+
+    /// Imports any file (image, PDF, document, …) as an `Attachment` owned by
+    /// this note, recording its UTI and size for correct preview routing and
+    /// display. The bytes live in SwiftData external storage.
+    private func importAttachment(at url: URL) {
         let scoped = url.startAccessingSecurityScopedResource()
         defer { if scoped { url.stopAccessingSecurityScopedResource() } }
         guard let data = try? Data(contentsOf: url) else { return }
 
-        let attachment = Attachment(filename: url.lastPathComponent, data: data)
+        // Resolve the UTI from the file when possible, falling back to the
+        // extension, so the viewer can route PDFs to PDFKit and the rest to
+        // Quick Look.
+        let contentType = (try? url.resourceValues(forKeys: [.contentTypeKey]).contentType)?.identifier
+            ?? UTType(filenameExtension: url.pathExtension)?.identifier
+
+        let attachment = Attachment(
+            filename: url.lastPathComponent,
+            data: data,
+            contentType: contentType,
+            byteCount: data.count
+        )
         attachment.note = note
         modelContext.insert(attachment)
         var current = note.attachments ?? []
         current.append(attachment)
         note.attachments = current
         note.modifiedAt = Date()
+
+        // Recognize text on-device (OCR) so the attachment's content is searchable.
+        AttachmentOCR.recognizeIfNeeded(attachment)
+
+        // Drop a portable reference into the body at the caret (not the bottom),
+        // resolving to the exported `_attachments/` folder. Images embed; other
+        // files link.
+        let name = url.lastPathComponent
+        let encoded = name.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? name
+        let path = "_attachments/\(encoded)"
+        let isImage = contentType.flatMap { UTType($0)?.conforms(to: .image) } ?? false
+        let snippet = isImage ? "![\(name)](\(path))" : "[📄 \(name)](\(path))"
+        editorController.insert(snippet)
     }
 
     // MARK: Tag reconciliation

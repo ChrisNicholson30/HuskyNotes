@@ -29,11 +29,12 @@ enum MarkdownFormatting {
         let sel = clamp(selection, length: ns.length)
 
         switch command {
-        case .bold:          return wrap(ns, sel, marker: "**")
-        case .italic:        return wrap(ns, sel, marker: "*")
-        case .strikethrough: return wrap(ns, sel, marker: "~~")
-        case .highlight:     return wrap(ns, sel, marker: "==")
-        case .inlineCode:    return wrap(ns, sel, marker: "`")
+        case .bold:          return wrap(ns, sel, marker: "**", placeholder: "bold")
+        case .italic:        return wrap(ns, sel, marker: "*", placeholder: "italic")
+        case .strikethrough: return wrap(ns, sel, marker: "~~", placeholder: "strikethrough")
+        case .highlight(let color): return setHighlight(ns, sel, color: color)
+        case .removeHighlight:      return removeHighlight(ns, sel)
+        case .inlineCode:    return wrap(ns, sel, marker: "`", placeholder: "code")
         case .underline:     return wrapAsymmetric(ns, sel, open: "<u>", close: "</u>")
         case .codeBlock:     return fenceCodeBlock(ns, sel)
         case .link:          return insertLink(ns, sel)
@@ -69,9 +70,16 @@ enum MarkdownFormatting {
 
     /// Toggles a symmetric inline marker (e.g. `**`, `*`, `` ` ``) around the
     /// selection. If the selection is already wrapped, the markers are removed;
-    /// otherwise they're added. An empty selection inserts the markers and
-    /// places the caret between them.
-    private static func wrap(_ ns: NSString, _ sel: NSRange, marker: String) -> Result {
+    /// otherwise they're added.
+    ///
+    /// With an empty selection, a selected `placeholder` is inserted *inside* the
+    /// markers (e.g. `**bold**` with "bold" selected). This matters because the
+    /// editor conceals syntax: bare `****` can't parse as emphasis, so it would
+    /// linger as raw, visible markers until something was typed. Inserting
+    /// `**bold**` instead parses immediately, the markers conceal, and the user
+    /// sees selected styled text to type over (mirrors `insertLink`'s "url"
+    /// placeholder). An empty `placeholder` falls back to bare markers + caret.
+    private static func wrap(_ ns: NSString, _ sel: NSRange, marker: String, placeholder: String = "") -> Result {
         let mlen = (marker as NSString).length
         let before = sel.location - mlen
         let after = sel.location + sel.length
@@ -87,7 +95,18 @@ enum MarkdownFormatting {
                           selection: NSRange(location: sel.location - mlen, length: sel.length))
         }
 
-        // Otherwise wrap.
+        // Empty selection → insert a selected placeholder so the markup parses and
+        // conceals straight away (no stray `****` showing as raw syntax).
+        if sel.length == 0, !placeholder.isEmpty {
+            let m = NSMutableString(string: ns)
+            m.insert(marker + placeholder + marker, at: sel.location)
+            return Result(text: m as String,
+                          selection: NSRange(location: sel.location + mlen,
+                                             length: (placeholder as NSString).length))
+        }
+
+        // Otherwise wrap the selection (or, with no placeholder, drop the caret
+        // between bare markers).
         let m = NSMutableString(string: ns)
         m.insert(marker, at: after)
         m.insert(marker, at: sel.location)
@@ -109,6 +128,88 @@ enum MarkdownFormatting {
     /// Inserts a matched pair (e.g. `[[` / `]]`) with the caret/selection inside.
     private static func insertPair(_ ns: NSString, _ sel: NSRange, open: String, close: String) -> Result {
         wrapAsymmetric(ns, sel, open: open, close: close)
+    }
+
+    // MARK: - Highlights
+
+    /// Applies a highlighter `color` around the selection, stored as
+    /// `<mark class="hl-…">…</mark>`. If the selection is already highlighted in
+    /// the *same* colour the highlight is removed (toggle); in a *different*
+    /// colour only the opening tag is recoloured; otherwise the selection is
+    /// wrapped (an empty selection drops the caret between fresh tags).
+    private static func setHighlight(_ ns: NSString, _ sel: NSRange, color: HighlightColor) -> Result {
+        let close = HighlightColor.closeTag
+        let closeLen = (close as NSString).length
+        let after = sel.location + sel.length
+
+        // Already wrapped exactly by a highlight?
+        if after + closeLen <= ns.length,
+           ns.substring(with: NSRange(location: after, length: closeLen)) == close,
+           let open = openTag(in: ns, endingAt: sel.location) {
+            if open.color == color {
+                // Same colour → unwrap.
+                let m = NSMutableString(string: ns)
+                m.deleteCharacters(in: NSRange(location: after, length: closeLen))
+                m.deleteCharacters(in: open.range)
+                return Result(text: m as String,
+                              selection: NSRange(location: sel.location - open.range.length, length: sel.length))
+            }
+            // Different colour → swap just the opening tag.
+            let newOpen = color.openTag
+            let m = NSMutableString(string: ns)
+            m.replaceCharacters(in: open.range, with: newOpen)
+            let delta = (newOpen as NSString).length - open.range.length
+            return Result(text: m as String,
+                          selection: NSRange(location: sel.location + delta, length: sel.length))
+        }
+
+        // Otherwise wrap the selection (or insert empty tags at the caret).
+        let openTag = color.openTag
+        let openLen = (openTag as NSString).length
+        let m = NSMutableString(string: ns)
+        m.insert(close, at: after)
+        m.insert(openTag, at: sel.location)
+        return Result(text: m as String,
+                      selection: NSRange(location: sel.location + openLen, length: sel.length))
+    }
+
+    /// Removes the highlight enclosing the selection / caret, if any.
+    private static func removeHighlight(_ ns: NSString, _ sel: NSRange) -> Result {
+        guard let regex = try? NSRegularExpression(pattern: HighlightColor.spanPattern) else {
+            return Result(text: ns as String, selection: sel)
+        }
+        let full = NSRange(location: 0, length: ns.length)
+        for match in regex.matches(in: ns as String, range: full) {
+            let span = match.range
+            let inner = match.range(at: 2)
+            // The selection (or caret) must sit within this highlight span.
+            guard sel.location >= span.location,
+                  sel.location + sel.length <= span.location + span.length else { continue }
+            let m = NSMutableString(string: ns)
+            // Delete the closing tag first (it's later in the string), then opening.
+            let closeStart = inner.location + inner.length
+            let closeLen = (span.location + span.length) - closeStart
+            m.deleteCharacters(in: NSRange(location: closeStart, length: closeLen))
+            let openLen = inner.location - span.location
+            m.deleteCharacters(in: NSRange(location: span.location, length: openLen))
+            let newLoc = max(span.location, sel.location - openLen)
+            return Result(text: m as String, selection: NSRange(location: newLoc, length: sel.length))
+        }
+        return Result(text: ns as String, selection: sel)
+    }
+
+    /// Detects a highlighter opening tag ending exactly at `loc`, returning its
+    /// range and colour.
+    private static func openTag(in ns: NSString, endingAt loc: Int) -> (range: NSRange, color: HighlightColor)? {
+        let start = max(0, loc - 40)
+        let windowLen = loc - start
+        guard windowLen > 0,
+              let regex = try? NSRegularExpression(pattern: HighlightColor.openTagAtEndPattern) else { return nil }
+        let window = ns.substring(with: NSRange(location: start, length: windowLen)) as NSString
+        guard let match = regex.firstMatch(in: window as String, range: NSRange(location: 0, length: window.length)),
+              match.numberOfRanges >= 2,
+              let color = HighlightColor(rawValue: window.substring(with: match.range(at: 1))) else { return nil }
+        return (NSRange(location: start + match.range.location, length: match.range.length), color)
     }
 
     // MARK: - Links
@@ -151,7 +252,7 @@ enum MarkdownFormatting {
     /// strips any heading to a plain paragraph. Re-applying the same level
     /// toggles it off.
     private static func setHeading(_ ns: NSString, _ sel: NSRange, level: Int) -> Result {
-        transformLines(ns, sel) { line in
+        let transform: (String) -> String = { line in
             let (stripped, existingLevel) = stripHeading(line)
             if level == 0 || level == existingLevel {
                 return stripped
@@ -159,6 +260,27 @@ enum MarkdownFormatting {
             let hashes = String(repeating: "#", count: max(1, min(level, 6)))
             return "\(hashes) \(stripped)"
         }
+
+        // Caret (no selection): rewrite just this line and keep a *caret*
+        // positioned with the content — shifted past the inserted `## ` marker —
+        // so the user can type the heading straight away. Selecting the whole
+        // line (as a ranged edit does) would leave the concealed marker
+        // "selected", showing as stray handles and overwritten by the next key.
+        if sel.length == 0 {
+            let lineRange = lineRangeTrimmingTerminator(ns, sel)
+            let oldLine = ns.substring(with: lineRange)
+            let newLine = transform(oldLine)
+            let m = NSMutableString(string: ns)
+            m.replaceCharacters(in: lineRange, with: newLine)
+            // The marker change happens at the line start, so shift the caret by
+            // the line's length delta to keep it with the same content.
+            let delta = (newLine as NSString).length - (oldLine as NSString).length
+            let caret = min(max(sel.location + delta, lineRange.location),
+                            lineRange.location + (newLine as NSString).length)
+            return Result(text: m as String, selection: NSRange(location: caret, length: 0))
+        }
+
+        return transformLines(ns, sel, transform)
     }
 
     /// Removes a leading ATX heading marker, returning the bare text and the
@@ -198,11 +320,150 @@ enum MarkdownFormatting {
         let newBlock = transformed.joined(separator: "\n")
         let m = NSMutableString(string: ns)
         m.replaceCharacters(in: line, with: newBlock)
+
+        // With a caret (no selection) on a single line, keep a *caret* positioned
+        // just past the marker so the user can type immediately — rather than
+        // selecting the whole line (which the next keystroke would overwrite,
+        // deleting the marker they just asked for).
+        if sel.length == 0, lines.count == 1 {
+            let prefixLen = (prefix as NSString).length
+            let caret = allPrefixed
+                ? max(line.location, sel.location - prefixLen) // removed: shift left
+                : sel.location + prefixLen                     // added: shift past marker
+            return Result(text: m as String, selection: NSRange(location: caret, length: 0))
+        }
+
+        // A real (multi-line or non-empty) selection: keep the block selected so
+        // re-applying the command toggles it cleanly.
         return Result(text: m as String,
                       selection: NSRange(location: line.location, length: (newBlock as NSString).length))
     }
 
+    // MARK: - List continuation (Return key)
+
+    /// Computes the result of pressing Return inside a list item, so lists
+    /// continue automatically:
+    ///
+    /// - On a list line **with content**, inserts a newline plus the next
+    ///   marker (`- `, the next ordered number, or an unchecked `- [ ] `),
+    ///   placing the caret ready to type the next item.
+    /// - On an **empty** list item (just the marker), ends the list by removing
+    ///   the marker and leaving a blank line.
+    ///
+    /// Returns `nil` when the caret isn't in a list item (or there's a ranged
+    /// selection), so the editor performs a normal newline.
+    static func handleReturn(text: String, selection: NSRange) -> Result? {
+        guard selection.length == 0 else { return nil }
+        let ns = text as NSString
+        let caret = min(max(selection.location, 0), ns.length)
+
+        let lineRange = lineRangeTrimmingTerminator(ns, NSRange(location: caret, length: 0))
+        let line = ns.substring(with: lineRange)
+        guard let marker = listMarker(of: line) else { return nil }
+
+        let content = String(line.dropFirst(marker.lineMarker.count))
+        let m = NSMutableString(string: ns)
+
+        if content.trimmingCharacters(in: .whitespaces).isEmpty {
+            // Empty item → end the list: clear this line's marker.
+            m.replaceCharacters(in: lineRange, with: "")
+            return Result(text: m as String,
+                          selection: NSRange(location: lineRange.location, length: 0))
+        }
+
+        // Non-empty item → continue: newline + the next marker at the caret.
+        let insertion = "\n" + marker.continuation
+        m.insert(insertion, at: caret)
+        let newCaret = caret + (insertion as NSString).length
+        return Result(text: m as String, selection: NSRange(location: newCaret, length: 0))
+    }
+
+    /// A parsed list marker on one line: the exact prefix present on this line
+    /// and the prefix to emit for the *next* item.
+    private struct ListMarker {
+        /// This line's leading marker, e.g. `"- "`, `"  1. "`, `"- [x] "`.
+        let lineMarker: String
+        /// The marker to insert for the following item (ordered number bumped,
+        /// task boxes reset to unchecked), indentation preserved.
+        let continuation: String
+    }
+
+    /// Detects a leading list marker on `line` (bullet `-`/`*`/`+`, ordered
+    /// `N.`/`N)`, or a `- [ ]`/`- [x]` task), or `nil` if the line isn't a list
+    /// item.
+    private static func listMarker(of line: String) -> ListMarker? {
+        var idx = line.startIndex
+        while idx < line.endIndex, line[idx] == " " || line[idx] == "\t" {
+            idx = line.index(after: idx)
+        }
+        let indent = String(line[line.startIndex..<idx])
+        guard idx < line.endIndex else { return nil }
+        let first = line[idx]
+
+        // Ordered: one or more digits, then "." or ")", then a space.
+        if first.isNumber {
+            var j = idx
+            var digits = ""
+            while j < line.endIndex, line[j].isNumber {
+                digits.append(line[j])
+                j = line.index(after: j)
+            }
+            guard j < line.endIndex, line[j] == "." || line[j] == ")" else { return nil }
+            let delim = line[j]
+            let afterDelim = line.index(after: j)
+            guard afterDelim < line.endIndex, line[afterDelim] == " " else { return nil }
+            let lineMarker = indent + digits + String(delim) + " "
+            let next = (Int(digits) ?? 0) + 1
+            return ListMarker(lineMarker: lineMarker,
+                              continuation: indent + "\(next)" + String(delim) + " ")
+        }
+
+        // Unordered (and task) bullets: "-", "*", "+", then a space.
+        if first == "-" || first == "*" || first == "+" {
+            let afterBullet = line.index(after: idx)
+            guard afterBullet < line.endIndex, line[afterBullet] == " " else { return nil }
+
+            // Optional task box: "[ ] " / "[x] " / "[X] " right after the bullet.
+            let boxStart = line.index(after: afterBullet)
+            if let contentStart = taskBoxEnd(line, from: boxStart) {
+                let lineMarker = String(line[line.startIndex..<contentStart])
+                return ListMarker(lineMarker: lineMarker,
+                                  continuation: indent + String(first) + " [ ] ")
+            }
+
+            let lineMarker = indent + String(first) + " "
+            return ListMarker(lineMarker: lineMarker,
+                              continuation: indent + String(first) + " ")
+        }
+
+        return nil
+    }
+
+    /// If `line` has a `[ ]`/`[x]`/`[X]` task box followed by a space starting at
+    /// `start`, returns the index just past the trailing space; otherwise `nil`.
+    private static func taskBoxEnd(_ line: String, from start: String.Index) -> String.Index? {
+        guard start < line.endIndex, line[start] == "[" else { return nil }
+        let mark = line.index(after: start)
+        guard mark < line.endIndex, line[mark] == " " || line[mark] == "x" || line[mark] == "X" else { return nil }
+        let close = line.index(after: mark)
+        guard close < line.endIndex, line[close] == "]" else { return nil }
+        let space = line.index(after: close)
+        guard space < line.endIndex, line[space] == " " else { return nil }
+        return line.index(after: space)
+    }
+
     // MARK: - Insertions
+
+    /// Inserts an attachment reference (image/file Markdown) at the caret on its
+    /// own line — a leading newline is added when the caret isn't at the start of
+    /// a line, and a trailing newline follows — placing the caret after it.
+    static func insertAttachment(_ snippet: String, into text: String, at selection: NSRange) -> Result {
+        let ns = text as NSString
+        let sel = clamp(selection, length: ns.length)
+        let atLineStart = sel.location == 0 || ns.character(at: sel.location - 1) == 0x0A
+        let block = (atLineStart ? "" : "\n") + snippet + "\n"
+        return insertBlock(ns, sel, block: block)
+    }
 
     /// Inserts a block string (e.g. `\n---\n`) at the selection, replacing it,
     /// and places the caret after the inserted text.

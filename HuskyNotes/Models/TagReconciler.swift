@@ -44,6 +44,26 @@ enum TagParser {
         }
         return ordered
     }
+
+    /// Returns `markdown` with every standalone occurrence of `#name` removed
+    /// (case-insensitively) — the body is canonical, so stripping the text is what
+    /// actually deletes the tag, otherwise it would be re-derived on the next save.
+    ///
+    /// Only the exact tag is removed: deleting `work` strips `#work` but leaves
+    /// `#workflow`, `#work-item` and the nested tag `#work/clients` untouched.
+    static func removing(tagNamed name: String, from markdown: String) -> String {
+        guard !name.isEmpty, !markdown.isEmpty else { return markdown }
+        let escaped = NSRegularExpression.escapedPattern(for: name)
+        // Same boundaries as `pattern`, anchored to this exact name, with a
+        // trailing guard so a longer tag (more name chars, `-`, or `/sub`) is kept.
+        let exact = "(?<![\\w/#])#\(escaped)(?![A-Za-z0-9_/-])"
+        guard let regex = try? NSRegularExpression(pattern: exact, options: [.caseInsensitive]) else {
+            return markdown
+        }
+        let ns = markdown as NSString
+        let range = NSRange(location: 0, length: ns.length)
+        return regex.stringByReplacingMatches(in: markdown, options: [], range: range, withTemplate: "")
+    }
 }
 
 /// Reconciles a note's `Tag` relationship with the `#tags` in its body.

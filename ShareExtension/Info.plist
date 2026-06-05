@@ -38,6 +38,12 @@
                 <integer>1</integer>
                 <key>NSExtensionActivationSupportsText</key>
                 <true/>
+                <key>NSExtensionActivationSupportsImageWithMaxCount</key>
+                <integer>20</integer>
+                <key>NSExtensionActivationSupportsFileWithMaxCount</key>
+                <integer>20</integer>
+                <key>NSExtensionActivationSupportsAttachmentsWithMaxCount</key>
+                <integer>20</integer>
             </dict>
         </dict>
     </dict>

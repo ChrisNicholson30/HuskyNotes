@@ -17,6 +17,19 @@ final class Attachment {
     /// The attachment's bytes, stored externally to keep the store small.
     @Attribute(.externalStorage) var data: Data? = nil
 
+    /// The UTI of the attachment (e.g. `"com.adobe.pdf"`), for icon + preview
+    /// routing. Defaulted/optional for CloudKit mirroring.
+    var contentType: String? = nil
+
+    /// The attachment's size in bytes (for display).
+    var byteCount: Int = 0
+
+    /// Text recognized in the attachment (OCR for images/PDFs), or `nil` if not
+    /// yet processed / not applicable. A **derived cache** — computed on-device
+    /// from ``data`` to make scans, photos and PDFs searchable. Never part of the
+    /// canonical Markdown body. Defaulted/optional for CloudKit mirroring.
+    var recognizedText: String? = nil
+
     /// The owning note. The inverse is ``Note/attachments``.
     var note: Note? = nil
 
@@ -29,11 +42,15 @@ final class Attachment {
         id: UUID = UUID(),
         filename: String = "",
         data: Data? = nil,
+        contentType: String? = nil,
+        byteCount: Int = 0,
         createdAt: Date = Date()
     ) {
         self.id = id
         self.filename = filename
         self.data = data
+        self.contentType = contentType
+        self.byteCount = byteCount
         self.createdAt = createdAt
     }
 }

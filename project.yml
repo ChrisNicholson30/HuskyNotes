@@ -8,6 +8,13 @@
 
 name: HuskyNotes
 
+# Base build settings shared by every target & config. Holds the signing team in
+# one place (see Config/Signing.xcconfig) so the project builds under your own —
+# or a fork's — Apple Developer account without per-target edits.
+configFiles:
+  Debug: Config/Signing.xcconfig
+  Release: Config/Signing.xcconfig
+
 options:
   bundleIdPrefix: com.huskynotes
   deploymentTarget:
@@ -38,8 +45,8 @@ settingGroups:
       SWIFT_EMIT_LOC_STRINGS: YES
       # App icon from Assets.xcassets (populate via scripts/make-appicon.sh).
       ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
-      # Apple Developer Team ID — applies to BOTH the iOS and macOS targets.
-      DEVELOPMENT_TEAM: Y769NRY4KQ
+      # DEVELOPMENT_TEAM is set centrally in Config/Signing.xcconfig (above),
+      # so every target — apps and extensions — signs under one team.
 
 targets:
   # ---------------------------------------------------------------- iOS app
@@ -55,6 +62,8 @@ targets:
         product: Markdown
       - target: HuskyNotes-ShareExtension
         embed: true
+      - target: HuskyNotes-Widgets
+        embed: true
     settings:
       groups:
         - shared
@@ -67,6 +76,8 @@ targets:
         INFOPLIST_KEY_UISupportedInterfaceOrientations: "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
         # iPad must support all four orientations (multitasking) unless full-screen-only.
         INFOPLIST_KEY_UISupportedInterfaceOrientations~ipad: "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
+        # Camera access for the document scanner (VNDocumentCameraViewController).
+        INFOPLIST_KEY_NSCameraUsageDescription: "Husky Notes uses the camera to scan documents into your notes."
         # CloudKit + App Group entitlement (iOS-specific entitlements file).
         CODE_SIGN_ENTITLEMENTS: HuskyNotes/App/HuskyNotes-iOS.entitlements
 
@@ -88,7 +99,30 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.huskynotes.app.ShareExtension
         CODE_SIGN_ENTITLEMENTS: ShareExtension/ShareExtension.entitlements
         CODE_SIGN_STYLE: Automatic
-        DEVELOPMENT_TEAM: Y769NRY4KQ
+        MARKETING_VERSION: "0.2.0"
+        CURRENT_PROJECT_VERSION: "2"
+
+  # ------------------------------------------------- iOS Widget Extension
+  HuskyNotes-Widgets:
+    type: app-extension
+    platform: iOS
+    deploymentTarget: "18.0"
+    sources:
+      - path: Widgets
+      - path: Shared
+    dependencies:
+      - sdk: WidgetKit.framework
+      - sdk: SwiftUI.framework
+    settings:
+      base:
+        SWIFT_VERSION: "6.0"
+        SWIFT_STRICT_CONCURRENCY: complete
+        GENERATE_INFOPLIST_FILE: NO
+        INFOPLIST_FILE: Widgets/Info.plist
+        PRODUCT_NAME: HuskyNotesWidgets
+        PRODUCT_BUNDLE_IDENTIFIER: com.huskynotes.app.Widgets
+        CODE_SIGN_ENTITLEMENTS: Widgets/Widgets.entitlements
+        CODE_SIGN_STYLE: Automatic
         MARKETING_VERSION: "0.2.0"
         CURRENT_PROJECT_VERSION: "2"
 
@@ -110,7 +144,7 @@ targets:
         PRODUCT_NAME: "Husky Notes"
         PRODUCT_BUNDLE_IDENTIFIER: com.huskynotes.app.mac
         INFOPLIST_KEY_LSApplicationCategoryType: "public.app-category.productivity"
-        INFOPLIST_KEY_NSHumanReadableCopyright: "© 2026 Husky Notes. Free and open source."
+        INFOPLIST_KEY_NSHumanReadableCopyright: "© 2026 CN-DESIGN LTD. Free and open source."
         # CloudKit: iCloud + CloudKit + App Sandbox (macOS-specific entitlements file).
         CODE_SIGN_ENTITLEMENTS: HuskyNotes/App/HuskyNotes-macOS.entitlements
 
@@ -133,6 +167,21 @@ schemes:
       config: Debug
     archive:
       config: Release
+  # The widget bundle vends two kinds (the configurable "New Note" widget and the
+  # "New Note" Control), so debugging the extension scheme directly needs to know
+  # which to preview. Pin a default `_XCWidgetKind`; flip the value to
+  # `com.huskynotes.app.control.newnote` to preview the Control instead.
+  # (Normal flow: run the HuskyNotes-iOS scheme and add the widget from the gallery.)
+  HuskyNotes-Widgets:
+    build:
+      targets:
+        HuskyNotes-Widgets: all
+    run:
+      config: Debug
+      environmentVariables:
+        - variable: _XCWidgetKind
+          value: com.huskynotes.app.widget.newnote
+          isEnabled: true
 
 # Note on Resources: the `HuskyNotes/Resources` folder (including
 # Themes/*.json and SampleNotes/*.md) is picked up by the recursive

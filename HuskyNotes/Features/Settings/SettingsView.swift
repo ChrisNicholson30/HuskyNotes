@@ -15,20 +15,51 @@ struct SettingsView: View {
 
     @Environment(ThemeStore.self) private var themeStore
 
+    #if os(iOS)
+    /// Dismisses the full-screen settings cover (the close button).
+    @Environment(\.dismiss) private var dismiss
+    #endif
+
     var body: some View {
         TabView {
-            NavigationStack { ThemeSettingsView() }
-                .tabItem { Label("Themes", systemImage: "paintpalette") }
+            NavigationStack {
+                ThemeSettingsView()
+                    #if os(iOS)
+                    .toolbar { closeButton }
+                    #endif
+            }
+            .tabItem { Label("Themes", systemImage: "paintpalette") }
 
-            NavigationStack { StorageSettingsView() }
-                .tabItem { Label("Storage", systemImage: "externaldrive") }
+            NavigationStack {
+                StorageSettingsView()
+                    #if os(iOS)
+                    .toolbar { closeButton }
+                    #endif
+            }
+            .tabItem { Label("Storage", systemImage: "externaldrive") }
         }
-        // Fixed sizing only suits the macOS Settings *window*. On iOS/iPadOS the
-        // sheet must lay out fluidly to the device width, so no min frame there.
+        // Fixed sizing only suits the macOS Settings *window*. On iOS/iPadOS
+        // settings fill the screen, so no min frame there.
         #if os(macOS)
         .frame(minWidth: 520, minHeight: 480)
         #endif
     }
+
+    #if os(iOS)
+    /// A leading "✕" that closes the full-screen settings (iOS/iPadOS).
+    @ToolbarContentBuilder
+    private var closeButton: some ToolbarContent {
+        ToolbarItem(placement: .topBarLeading) {
+            Button { dismiss() } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .symbolRenderingMode(.hierarchical)
+                    .font(.title2)
+                    .foregroundStyle(themeStore.active.textSecondary.swiftUIColor)
+            }
+            .accessibilityLabel("Close Settings")
+        }
+    }
+    #endif
 }
 
 /// iCloud sync, the continuous `.md` mirror, and one-shot export.
@@ -36,6 +67,7 @@ struct StorageSettingsView: View {
 
     @Environment(\.modelContext) private var modelContext
     @Environment(ThemeStore.self) private var themeStore
+    @Environment(AppLock.self) private var appLock
     private var theme: Theme { themeStore.active }
 
     @State private var syncEnabled = UserDefaults.standard.bool(forKey: PersistenceController.syncEnabledKey)
@@ -45,7 +77,15 @@ struct StorageSettingsView: View {
     @State private var statusMessage: String?
 
     var body: some View {
+        @Bindable var appLock = appLock
         Form {
+            Section("Privacy") {
+                Toggle("Require \(appLock.biometryName) to Unlock", isOn: $appLock.isEnabled)
+                Text("Locks Husky Notes when you leave it; reopening needs \(appLock.biometryName) or your device passcode. This setting stays on this device.")
+                    .font(.footnote)
+                    .foregroundStyle(theme.textSecondary.swiftUIColor)
+            }
+
             Section("iCloud Sync") {
                 Toggle("Sync notes via iCloud", isOn: $syncEnabled)
                     .onChange(of: syncEnabled) { _, value in

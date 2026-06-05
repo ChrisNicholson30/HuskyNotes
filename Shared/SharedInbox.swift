@@ -2,77 +2,162 @@
 //  SharedInbox.swift
 //  HuskyNotes  +  HuskyNotes-ShareExtension  (shared source)
 //
-//  A tiny hand-off queue between the Share Extension and the main app, stored in
-//  the shared App Group container. The extension appends captured web pages; the
-//  app drains them into real notes on launch/foreground.
+//  A robust hand-off queue between the Share Extension and the app, stored in
+//  the shared App Group container. The extension writes one self-contained file
+//  per shared capture (text/URL plus any image/PDF/file attachments); the app
+//  drains each into a real note and deletes it only once it succeeds.
 //
-//  Kept deliberately dependency-free (Foundation only) so it compiles into both
-//  the app and the extension. SwiftData is intentionally NOT used in the
-//  extension — passing plain data through the App Group is far more robust.
+//  Design for robustness:
+//   • One JSON file per item (`inbox/<id>.json`) — no shared-array read-modify-
+//     write, so concurrent captures can't clobber each other or corrupt state.
+//   • Attachment bytes live as sibling blob files; the JSON is written *last*
+//     (after its blobs), so the app never sees an item referencing missing data.
+//   • The app removes an item only after the note is created — a crash mid-drain
+//     loses nothing; the item is retried next launch.
+//
+//  Foundation-only so it compiles into both the app and the extension.
 //
 
 import Foundation
 
-/// A queue of shared items handed from the Share Extension to the app.
+/// A durable hand-off queue from the Share Extension to the app.
 enum SharedInbox {
 
     /// The App Group both targets are members of.
     static let appGroupID = "group.com.huskynotes.app"
 
-    /// One captured item from a browser share.
-    struct Item: Codable, Identifiable {
-        var id = UUID()
-        /// The page title (or a fallback).
-        var title: String
-        /// The page URL, if any.
-        var urlString: String?
-        /// Selected text / page text, if any.
-        var text: String?
-        /// When it was captured.
-        var date = Date()
+    /// Skip attachments larger than this (keeps extension memory + sync sane).
+    static let maxAttachmentBytes = 50_000_000
 
-        /// Renders the item as a Markdown note body.
+    /// A captured attachment (its bytes live in a sibling blob file).
+    struct Attachment: Codable, Sendable {
+        /// Original display name, e.g. `photo.jpg`.
+        var filename: String
+        /// The blob's file name within the inbox directory.
+        var storedName: String
+        /// The attachment's UTI, if known.
+        var contentType: String?
+        /// Whether to embed it as an image (vs. link it as a file) in the note.
+        var isImage: Bool
+    }
+
+    /// One captured share: text/URL plus any attachments.
+    struct Item: Codable, Identifiable, Sendable {
+        var id = UUID()
+        var title: String
+        var urlString: String?
+        var text: String?
+        var date = Date()
+        var attachments: [Attachment] = []
+
+        /// Renders the captured share as a Markdown note body, embedding images
+        /// and linking files into the exported `_attachments/` folder.
         var markdown: String {
-            var lines = ["# \(title.isEmpty ? "Shared Page" : title)", ""]
+            var lines = ["# \(title.isEmpty ? "Shared" : title)", ""]
             if let urlString, !urlString.isEmpty {
                 lines.append("[\(urlString)](\(urlString))")
                 lines.append("")
             }
             if let text, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 lines.append(text)
+                lines.append("")
             }
-            lines.append("")
+            for attachment in attachments {
+                let encoded = attachment.filename
+                    .addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? attachment.filename
+                let path = "_attachments/\(encoded)"
+                lines.append(attachment.isImage
+                    ? "![\(attachment.filename)](\(path))"
+                    : "[📄 \(attachment.filename)](\(path))")
+                lines.append("")
+            }
             lines.append("#clipped")
             return lines.joined(separator: "\n")
         }
     }
 
-    /// The inbox file inside the App Group container.
-    private static var fileURL: URL? {
+    // MARK: Paths
+
+    private static var inboxDir: URL? {
         FileManager.default
             .containerURL(forSecurityApplicationGroupIdentifier: appGroupID)?
-            .appendingPathComponent("inbox.json")
+            .appendingPathComponent("inbox", isDirectory: true)
     }
 
-    /// Appends an item to the inbox (called by the extension).
-    static func append(_ item: Item) {
-        guard let url = fileURL else { return }
-        var items = load()
-        items.append(item)
-        if let data = try? JSONEncoder().encode(items) {
-            try? data.write(to: url, options: .atomic)
+    /// The inbox directory, created if needed.
+    private static func ensureInbox() -> URL? {
+        guard let dir = inboxDir else { return nil }
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }
+
+    // MARK: Write side (extension)
+
+    /// Copies an attachment file into the inbox and returns its reference, or
+    /// `nil` if it can't be stored (missing, too large, or a copy failure).
+    static func storeAttachment(at source: URL, filename: String, contentType: String?, isImage: Bool) -> Attachment? {
+        guard let dir = ensureInbox() else { return nil }
+
+        // Guard against oversized captures (videos etc.).
+        if let size = try? source.resourceValues(forKeys: [.fileSizeKey]).fileSize, size > maxAttachmentBytes {
+            return nil
+        }
+
+        let safeName = sanitize(filename)
+        let storedName = "\(UUID().uuidString)-\(safeName)"
+        let dest = dir.appendingPathComponent(storedName)
+        do {
+            try? FileManager.default.removeItem(at: dest)
+            try FileManager.default.copyItem(at: source, to: dest)
+            return Attachment(filename: safeName, storedName: storedName, contentType: contentType, isImage: isImage)
+        } catch {
+            return nil
         }
     }
 
-    /// Loads all pending items.
-    static func load() -> [Item] {
-        guard let url = fileURL, let data = try? Data(contentsOf: url) else { return [] }
-        return (try? JSONDecoder().decode([Item].self, from: data)) ?? []
+    /// Appends an item to the inbox (writes its JSON file last, after its blobs).
+    static func append(_ item: Item) {
+        guard let dir = ensureInbox(),
+              let data = try? JSONEncoder().encode(item) else { return }
+        let url = dir.appendingPathComponent("\(item.id.uuidString).json")
+        try? data.write(to: url, options: .atomic)
     }
 
-    /// Clears the inbox (called by the app after draining).
-    static func clear() {
-        guard let url = fileURL else { return }
-        try? FileManager.default.removeItem(at: url)
+    // MARK: Read side (app)
+
+    /// All pending items, oldest first.
+    static func pendingItems() -> [Item] {
+        guard let dir = inboxDir,
+              let urls = try? FileManager.default.contentsOfDirectory(
+                at: dir, includingPropertiesForKeys: nil) else { return [] }
+        return urls
+            .filter { $0.pathExtension == "json" }
+            .compactMap { url in (try? Data(contentsOf: url)).flatMap { try? JSONDecoder().decode(Item.self, from: $0) } }
+            .sorted { $0.date < $1.date }
+    }
+
+    /// The bytes for an attachment, if still present.
+    static func attachmentData(for attachment: Attachment) -> Data? {
+        guard let dir = inboxDir else { return nil }
+        return try? Data(contentsOf: dir.appendingPathComponent(attachment.storedName))
+    }
+
+    /// Removes an item and all its attachment blobs (after a successful drain).
+    static func remove(_ item: Item) {
+        guard let dir = inboxDir else { return }
+        try? FileManager.default.removeItem(at: dir.appendingPathComponent("\(item.id.uuidString).json"))
+        for attachment in item.attachments {
+            try? FileManager.default.removeItem(at: dir.appendingPathComponent(attachment.storedName))
+        }
+    }
+
+    // MARK: Helpers
+
+    /// A filesystem-safe version of a name (no slashes / control chars).
+    private static func sanitize(_ name: String) -> String {
+        let trimmed = name.isEmpty ? "file" : name
+        let illegal = CharacterSet(charactersIn: "/\\:*?\"<>|").union(.controlCharacters)
+        let cleaned = trimmed.components(separatedBy: illegal).joined(separator: "_")
+        return String(cleaned.prefix(120))
     }
 }

@@ -2,10 +2,18 @@
 //  MarkdownStyler.swift
 //  HuskyNotes
 //
-//  Live source styling for the editor. Parses Markdown with apple/swift-markdown
-//  and produces an `NSAttributedString` whose *visible characters are identical*
-//  to the input (CommonMark + GFM). Syntax markers (`#`, `*`, `` ` ``, `>`, …) are
-//  NOT removed — this is source styling, not a rendered preview.
+//  Live preview styling for the editor (Bear-style). Parses Markdown with
+//  apple/swift-markdown and produces an `NSAttributedString` whose *backing
+//  characters are identical* to the input (CommonMark + GFM) — so the source
+//  always round-trips losslessly — while the syntax markers (`#`, `*`, `` ` ``,
+//  `>`, …) are *visually concealed*. The editor therefore reads like the rendered
+//  note (bold shows as bold, not `**bold**`) yet stays fully editable.
+//
+//  Concealment policy: emphasis, inline code, headings and quote markers are
+//  hidden unconditionally, because their styled appearance fully conveys them and
+//  the raw syntax only gets in the way. Links are the exception — they hide a
+//  payload (the URL) the user must reach to edit — so a link's markers are
+//  revealed while the caret is inside it, then re-hidden when it leaves.
 //
 //  All colours and fonts come exclusively from the active `Theme`; nothing here
 //  is hard-coded, in keeping with the project's decoupled-theming principle.
@@ -57,16 +65,17 @@ struct MarkdownStyler {
     ///   - markdown: The CommonMark + GFM source. This is the canonical text and
     ///     is reproduced character-for-character in the output.
     ///   - theme: The active theme supplying every colour, font and metric.
-    ///   - revealedRange: The character range (typically the paragraph the caret
-    ///     is in) whose syntax markers should stay visible. Markers outside it
-    ///     are concealed, Bear-style. Pass `nil` to conceal every marker (the
-    ///     fully "rendered" look when the editor isn't focused).
+    ///   - caret: The current caret/selection. Used only to reveal the markers of
+    ///     a *revealable* span (a link) while the caret is inside it, so its URL
+    ///     can be edited. Emphasis/code/heading/quote markers are concealed
+    ///     regardless of the caret, so the text always reads as rendered. Pass
+    ///     `nil` to conceal every marker (the fully "rendered" look).
     /// - Returns: An `NSAttributedString` whose visible string equals `markdown`.
     func attributedString(
         for markdown: String,
         theme: Theme,
-        revealing revealedRange: NSRange? = nil
-    ) -> NSAttributedString {
+        caret: NSRange? = nil
+    ) -> StyledText {
         let fonts = FontSet(theme: theme)
 
         // 1. Base layer: the whole text in body style. Guarantees that any range
@@ -76,7 +85,9 @@ struct MarkdownStyler {
             attributes: Self.baseAttributes(theme: theme, fonts: fonts)
         )
 
-        guard !markdown.isEmpty else { return result }
+        guard !markdown.isEmpty else {
+            return StyledText(attributed: result, concealElements: [], trailingHiddenMarkers: [])
+        }
 
         // 2. Decoration layer: walk the AST and overlay attributes onto the
         //    source ranges of each element. Source-range mapping keeps the
@@ -96,10 +107,25 @@ struct MarkdownStyler {
         //     and definitions with a small regex pass.
         styleFootnotes(in: result, source: markdown, theme: theme, fonts: fonts)
 
-        // 3. Concealment layer: hide marker ranges that don't intersect the
-        //    revealed (active) line so the text reads like rendered Markdown
-        //    everywhere except where the caret is.
-        conceal(visitor.concealRanges, in: result, revealing: revealedRange)
+        // 2c. Highlights (`<mark class="hl-…">`): paint the marker fill and hide
+        //     the surrounding tags *always* — they're toolbar-inserted HTML the
+        //     user never hand-types, so highlighted text always reads cleanly. The
+        //     closing `</mark>` is a trailing delimiter (see step 3).
+        let highlightCloseTags = styleHighlights(in: result, source: markdown)
+
+        // 3. Concealment layer (Bear-style): hide each inline marker so the text
+        //    reads like rendered Markdown. Emphasis/code/quote markers are hidden
+        //    unconditionally; a link's markers are revealed only while the caret
+        //    is inside it (so its URL stays editable). Returns the *trailing*
+        //    delimiters that got hidden (closing `**`, `` ` ``, …) so the editor
+        //    can skip Return/newlines past them rather than splitting the span.
+        let trailingHiddenMarkers = concealSpans(visitor.concealRanges, in: result, caret: caret)
+
+        // 3b. Heading markers (`#`) are hidden *always* — even on the active
+        //     line — so a note reads as just its styled heading (a fresh `# `
+        //     note shows an empty heading, not the raw marker). The `#` stays in
+        //     the source, so export and round-tripping are unaffected.
+        concealAlways(visitor.headingMarkerRanges, in: result)
 
         // 4. List markers: style bullets and task checkboxes (`- [ ]` / `- [x]`)
         //    as monospace + accent affordances, and dim completed tasks. Kept as
@@ -108,7 +134,35 @@ struct MarkdownStyler {
         //    `[ ]` reads clearly and stays tappable; Read mode shows true boxes.
         applyListMarkers(visitor.listGlyphs, in: result, theme: theme, fonts: fonts)
 
-        return result
+        // Only revealable spans (links) need caret tracking — they're the only
+        // ones whose concealment changes as the caret moves. Always-hidden
+        // markers never reveal, so the editor needn't re-style when crossing them.
+        return StyledText(
+            attributed: result,
+            concealElements: visitor.concealRanges.filter(\.revealOnCaret).map(\.element),
+            trailingHiddenMarkers: trailingHiddenMarkers + highlightCloseTags
+        )
+    }
+
+    /// The styled text plus the metadata the editor needs to keep editing smooth.
+    struct StyledText {
+        let attributed: NSAttributedString
+        /// Element ranges whose markers conceal/reveal with the caret (links) —
+        /// the editor re-styles only when the caret crosses one, not on every move.
+        let concealElements: [NSRange]
+        /// Ranges of concealed *trailing* delimiters (closing `**`, `` ` ``,
+        /// `</mark>`, …). Zero-width, so the caret rests just before them at a
+        /// span's visual end; the editor skips Return past them so the closing
+        /// marker isn't stranded on the next line.
+        let trailingHiddenMarkers: [NSRange]
+    }
+
+    /// Whether a caret/selection touches `element` (inclusive of its edges) —
+    /// i.e. that element is being edited, so its markers should stay revealed.
+    static func caret(_ caret: NSRange, touches element: NSRange) -> Bool {
+        let elementEnd = element.location + element.length
+        let caretEnd = caret.location + caret.length
+        return caret.location <= elementEnd && caretEnd >= element.location
     }
 
     /// Styles list markers so checkboxes/bullets read as affordances, and dims
@@ -169,28 +223,80 @@ struct MarkdownStyler {
         }
     }
 
-    /// Hides the given marker ranges by collapsing them to a near-zero, clear
-    /// run — unless they intersect `revealedRange`, in which case they stay
-    /// visible. The backing string is never modified, so the source round-trips.
-    private func conceal(_ ranges: [NSRange], in target: NSMutableAttributedString, revealing revealedRange: NSRange?) {
-        guard !ranges.isEmpty else { return }
+    /// Paints highlighter spans (`<mark class="hl-…">…</mark>`): a fluorescent
+    /// fill behind the inner text with a dark ink so it stays readable in any
+    /// theme. The `<mark>`/`</mark>` tags are concealed always. The source string
+    /// is untouched.
+    ///
+    /// - Returns: the closing `</mark>` tag ranges, which are trailing delimiters
+    ///   the editor must skip a Return past (same reason as `concealSpans`).
+    private func styleHighlights(in target: NSMutableAttributedString, source: String) -> [NSRange] {
+        guard source.contains("<mark class=\"hl-"),
+              let regex = try? NSRegularExpression(pattern: HighlightColor.spanPattern) else { return [] }
+        let ns = source as NSString
         let length = target.length
-        let hiddenFont = PlatformFont.systemFont(ofSize: 0.1)
-        let clear = PlatformColor.clear
+        var tagRanges: [NSRange] = []
+        var closeTags: [NSRange] = []
 
-        for range in ranges {
-            guard range.length > 0,
-                  range.location >= 0,
-                  range.location + range.length <= length
-            else { continue }
-            if let revealedRange, NSIntersectionRange(range, revealedRange).length > 0 {
-                continue // caret is on this line — keep the markers visible.
+        for match in regex.matches(in: source, range: NSRange(location: 0, length: ns.length)) {
+            let span = match.range
+            let inner = match.range(at: 2)
+            guard inner.location != NSNotFound,
+                  inner.location >= 0, inner.location + inner.length <= length,
+                  let color = HighlightColor(rawValue: ns.substring(with: match.range(at: 1))) else { continue }
+
+            // Fill + ink behind the highlighted text.
+            if inner.length > 0 {
+                target.addAttributes(
+                    [.backgroundColor: color.fill.platformColor, .foregroundColor: color.ink.platformColor],
+                    range: inner
+                )
             }
-            target.addAttributes(
-                [.font: hiddenFont, .foregroundColor: clear, .backgroundColor: clear],
-                range: range
-            )
+            // The opening and closing tags are always hidden.
+            tagRanges.append(NSRange(location: span.location, length: inner.location - span.location))
+            let closeTag = NSRange(location: inner.location + inner.length,
+                                   length: (span.location + span.length) - (inner.location + inner.length))
+            tagRanges.append(closeTag)
+            if closeTag.length > 0 { closeTags.append(closeTag) }
         }
+        concealAlways(tagRanges, in: target)
+        return closeTags
+    }
+
+    /// Hides each inline marker so the text reads as rendered. A span flagged
+    /// `revealOnCaret` (a link, whose URL must stay reachable) keeps its markers
+    /// visible while the caret is inside its element; every other span is hidden
+    /// unconditionally. The backing string is never modified, so it round-trips.
+    ///
+    /// - Returns: the marker ranges that were hidden *and* sit at the trailing
+    ///   edge of their span (closing `**`, `` ` ``, …), so the editor can skip a
+    ///   Return past them instead of splitting the span.
+    private func concealSpans(_ spans: [ConcealSpan], in target: NSMutableAttributedString, caret: NSRange?) -> [NSRange] {
+        var trailing: [NSRange] = []
+        for span in spans {
+            if span.revealOnCaret, let caret, Self.caret(caret, touches: span.element) { continue } // editing → reveal
+            hide(span.marker, in: target)
+            if span.isTrailing { trailing.append(span.marker) }
+        }
+        return trailing
+    }
+
+    /// Hides marker ranges unconditionally (headings, highlight tags).
+    private func concealAlways(_ ranges: [NSRange], in target: NSMutableAttributedString) {
+        for range in ranges { hide(range, in: target) }
+    }
+
+    /// Collapses a range to a near-zero, clear run so its characters take no
+    /// visible space while remaining in the source.
+    private func hide(_ range: NSRange, in target: NSMutableAttributedString) {
+        guard range.length > 0, range.location >= 0,
+              range.location + range.length <= target.length else { return }
+        target.addAttributes(
+            [.font: PlatformFont.systemFont(ofSize: 0.1),
+             .foregroundColor: PlatformColor.clear,
+             .backgroundColor: PlatformColor.clear],
+            range: range
+        )
     }
 
     /// Default attributes applied to the entire document before decoration.
@@ -329,6 +435,23 @@ private struct FontSet {
     #endif
 }
 
+/// A concealable inline marker paired with the element it delimits.
+///
+/// Most markers (emphasis, inline code, quotes) are hidden unconditionally so the
+/// editor reads as rendered. When `revealOnCaret` is `true` (links), the marker
+/// is instead revealed while the caret is inside `element`, so its hidden payload
+/// — the URL — can be edited, then re-hidden when the caret leaves.
+struct ConcealSpan {
+    let marker: NSRange
+    let element: NSRange
+    var revealOnCaret: Bool = false
+    /// `true` for a span's *closing* delimiter (the trailing `**`, `` ` ``, `~~`).
+    /// Because it's concealed (zero-width), the caret rests just before it at the
+    /// span's visual end; the editor uses this to skip a Return past it rather
+    /// than splitting the span across a line.
+    var isTrailing: Bool = false
+}
+
 // MARK: - StylingVisitor
 
 /// Walks the Markdown AST and overlays themed attributes onto the source ranges
@@ -345,9 +468,13 @@ private struct StylingVisitor: MarkupWalker {
     /// attributed string's range semantics.
     private let ns: NSString
 
-    /// Collected ranges of syntax markers (e.g. `#`, `**`, `` ` ``, `[`…`](…)`),
-    /// to be concealed unless the caret sits on their line.
-    private(set) var concealRanges: [NSRange] = []
+    /// Collected syntax markers (e.g. `**`, `` ` ``, `[`…`](…)`) paired with the
+    /// element each belongs to, concealed unless the caret is inside that element.
+    private(set) var concealRanges: [ConcealSpan] = []
+
+    /// Heading marker ranges (`#` runs + trailing space), concealed *always* so
+    /// headings read as plain styled titles regardless of the caret position.
+    private(set) var headingMarkerRanges: [NSRange] = []
 
     /// Collected list bullets / task checkboxes to render as inline glyphs.
     private(set) var listGlyphs: [ListGlyph] = []
@@ -368,8 +495,16 @@ private struct StylingVisitor: MarkupWalker {
 
     mutating func visitHeading(_ heading: Heading) {
         if let range = nsRange(for: heading) {
-            applyFontPreservingTraits(fonts.heading(level: heading.level), over: range)
+            let font = fonts.heading(level: heading.level)
+            applyFontPreservingTraits(font, over: range)
             target.addAttribute(.foregroundColor, value: theme.heading.platformColor, range: range)
+            // Pin a minimum line height to the heading font so the line keeps its
+            // full height even when the whole marker (`# `) is concealed — e.g. a
+            // brand-new, still-empty note — instead of collapsing to a tiny caret.
+            let style = NSMutableParagraphStyle()
+            style.lineHeightMultiple = CGFloat(theme.lineSpacing)
+            style.minimumLineHeight = font.pointSize * 1.2
+            target.addAttribute(.paragraphStyle, value: style, range: range)
             recordHeadingMarker(in: range)
         }
         descendInto(heading)
@@ -385,6 +520,16 @@ private struct StylingVisitor: MarkupWalker {
                 ],
                 range: range
             )
+            // Language-aware syntax colours overlaid on the block's source. The
+            // fence lines (``` / ~~~) contain no tokens, so they stay codeText.
+            let blockText = ns.substring(with: range)
+            for span in SyntaxHighlighter.spans(for: blockText, language: codeBlock.language) {
+                let absolute = NSRange(location: range.location + span.range.location, length: span.range.length)
+                guard absolute.location >= 0, absolute.location + absolute.length <= target.length else { continue }
+                target.addAttribute(.foregroundColor,
+                                    value: SyntaxHighlighter.color(for: span.kind, in: theme).platformColor,
+                                    range: absolute)
+            }
         }
         // Code blocks have no stylable inline children; do not descend.
     }
@@ -586,8 +731,8 @@ private struct StylingVisitor: MarkupWalker {
     /// (e.g. the `**` of `**bold**`, the `*` of `*italic*`).
     private mutating func recordPairedDelimiters(in range: NSRange, length: Int) {
         guard range.length >= length * 2 else { return }
-        concealRanges.append(NSRange(location: range.location, length: length))
-        concealRanges.append(NSRange(location: range.location + range.length - length, length: length))
+        concealRanges.append(ConcealSpan(marker: NSRange(location: range.location, length: length), element: range))
+        concealRanges.append(ConcealSpan(marker: NSRange(location: range.location + range.length - length, length: length), element: range, isTrailing: true))
     }
 
     /// Records the leading `#`…`#` run plus trailing spaces of an ATX heading.
@@ -601,7 +746,7 @@ private struct StylingVisitor: MarkupWalker {
             let c = ns.character(at: i)
             if c == 32 || c == 9 { i += 1 } else { break } // space / tab
         }
-        concealRanges.append(NSRange(location: range.location, length: i - range.location))
+        headingMarkerRanges.append(NSRange(location: range.location, length: i - range.location))
     }
 
     /// Records the leading and trailing backtick runs of inline code.
@@ -613,21 +758,22 @@ private struct StylingVisitor: MarkupWalker {
         guard leadCount > 0 else { return }
         var trailing = end
         while trailing > leading, ns.character(at: trailing - 1) == 96 { trailing -= 1 }
-        concealRanges.append(NSRange(location: range.location, length: leadCount))
+        concealRanges.append(ConcealSpan(marker: NSRange(location: range.location, length: leadCount), element: range))
         if end - trailing > 0 {
-            concealRanges.append(NSRange(location: trailing, length: end - trailing))
+            concealRanges.append(ConcealSpan(marker: NSRange(location: trailing, length: end - trailing), element: range, isTrailing: true))
         }
     }
 
     /// Records a link's bracket/destination syntax (`[` … `](url)`), leaving the
-    /// visible link text intact.
+    /// visible link text intact. Flagged `revealOnCaret` so the markers — and the
+    /// hidden URL — reappear for editing while the caret is inside the link.
     private mutating func recordLinkMarkers(in range: NSRange) {
         guard range.length >= 2, ns.character(at: range.location) == 91 /* [ */ else { return }
         let close = ns.range(of: "](", options: [], range: range)
         guard close.location != NSNotFound else { return }
-        concealRanges.append(NSRange(location: range.location, length: 1)) // leading [
+        concealRanges.append(ConcealSpan(marker: NSRange(location: range.location, length: 1), element: range, revealOnCaret: true)) // leading [
         let tailStart = close.location
-        concealRanges.append(NSRange(location: tailStart, length: range.location + range.length - tailStart))
+        concealRanges.append(ConcealSpan(marker: NSRange(location: tailStart, length: range.location + range.length - tailStart), element: range, revealOnCaret: true))
     }
 
     /// Records the `>` (and one trailing space) quote prefix on each line of a
@@ -641,7 +787,7 @@ private struct StylingVisitor: MarkupWalker {
             if i < end, ns.character(at: i) == 62 /* > */ {
                 var markerEnd = i + 1
                 if markerEnd < end, ns.character(at: markerEnd) == 32 { markerEnd += 1 }
-                concealRanges.append(NSRange(location: lineStart, length: markerEnd - lineStart))
+                concealRanges.append(ConcealSpan(marker: NSRange(location: lineStart, length: markerEnd - lineStart), element: range))
             }
             let rest = NSRange(location: lineStart, length: end - lineStart)
             let newline = ns.range(of: "\n", options: [], range: rest)

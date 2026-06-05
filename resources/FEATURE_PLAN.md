@@ -126,9 +126,11 @@ Add to `Attachment` (CloudKit-safe — defaulted, optional):
   both platforms.
 
 ### Phases
-- **P1 — Attach + view** *(medium)*: any-file import → `Attachment` with
-  `contentType`; `AttachmentsBar` shows typed chips (PDF/file icon + name + size);
-  tap → PDFKit (PDF) or Quick Look (other) via a temp file. Export already works.
+- **P1 — Attach + view** *(medium)* — ✅ **done**: any-file import → `Attachment`
+  with `contentType` + `byteCount` (`NoteEditorView.importAttachment`, "Insert
+  File" toolbar button, `.fileImporter([.pdf, .data])`); `AttachmentsBar` shows
+  typed chips (PDF/file icon + name + size); tap → PDFKit (PDF) or Quick Look
+  (other) via a temp file (`AttachmentViewer`). Export already works.
   **Exit:** attach a PDF, open it in the in-app reader on iOS + macOS; it exports
   to `_attachments/` and round-trips.
 - **P2 — Body embeds**: insert `[📄 name](_attachments/name)` (or `![[name]]`) at

@@ -1,0 +1,19 @@
+// Signing & team configuration for Husky Notes.
+//
+// Husky Notes has NO server: every note lives on-device and (when sync is on) in
+// each user's OWN private CloudKit database. The only account-specific value is
+// the Apple Developer team you sign with — set it here, in ONE place, so the
+// project builds under your account or a fork's without editing every target.
+//
+// IMPORTANT: this team MUST own the CloudKit container referenced in the
+// entitlements (`iCloud.com.huskynotes.app`) and in PersistenceController, or
+// iCloud sync will silently fall back to a local-only store.
+//
+// This is the team whose Apple Developer membership owns the app's identifiers,
+// the iCloud container (`iCloud.com.huskynotes.app`) and the App Group
+// (`group.com.huskynotes.app`) — CN-DESIGN LTD (Y769NRY4KQ). These identifiers
+// are globally unique, so the project must sign under this team. To build under a
+// fork's account, change this one line and register your own identifiers/container
+// (see resources/CLOUDKIT_SETUP.md). Team IDs are not secret (they ship in apps).
+
+DEVELOPMENT_TEAM = Y769NRY4KQ

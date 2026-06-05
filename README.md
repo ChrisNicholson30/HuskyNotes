@@ -96,6 +96,7 @@ Smart lists (Pinned, Today, Untagged, per-tag) are **computed**, not stored — 
 - [ ] Distraction-free focus mode
 - [ ] Theme engine — Blue Husky, Husky Day, Pine, Ember
 - [ ] `.md` export with YAML frontmatter
+- [ ] PDF export & printing (per-note, rendered like Read mode)
 - [ ] Continuous two-way `.md` mirror
 - [ ] Full theme editor / custom themes
 - [ ] Per-note locking (Face ID / Touch ID app lock)
@@ -149,5 +150,6 @@ CloudKit requires:
 
 MIT — fully open source. Read the code, audit the sync, file an issue, or build it yourself.
 
+- Designer: CN-DESIGN LTD
 - Repo: <https://github.com/chrisnicholson30/husky-notes>
-- Contact: [hello@huskynotes.app](mailto:hello@huskynotes.app)
+- Contact: [contact@huskynotes.com](mailto:contact@huskynotes.com)

@@ -2,16 +2,17 @@
 //  ShareViewController.swift
 //  HuskyNotes-ShareExtension
 //
-//  The Share Extension shown in Safari (and other browsers/apps) on iOS/iPadOS.
-//  It captures the shared page — URL, title, and any selected text (via a small
-//  JavaScript preprocessing file) — writes it to the App Group inbox, and
-//  finishes. The main app turns inbox items into notes on next launch.
+//  The Share Extension shown from Safari, Photos, Files and other apps. It
+//  captures whatever was shared — a web page (URL + title + selection via a JS
+//  preprocessing file), plain text, images, PDFs, or arbitrary files — writes a
+//  single self-contained item to the App Group inbox, and finishes. The main app
+//  turns inbox items into notes (with attachments) on next launch/foreground.
 //
 
 import UIKit
 import UniformTypeIdentifiers
 
-/// Captures shared web content into the App Group inbox.
+/// Captures shared content into the App Group inbox.
 @objc(ShareViewController)
 final class ShareViewController: UIViewController {
 
@@ -25,43 +26,65 @@ final class ShareViewController: UIViewController {
         Task { await capture() }
     }
 
-    /// Pulls URL / text / JS-preprocessed page info from the extension context.
-    /// Loads run sequentially via `await`, so there are no concurrent captures.
+    /// Walks every input item and attachment provider, capturing text/URL and
+    /// any image/PDF/file attachments into a single inbox item.
     private func capture() async {
-        guard
-            let item = extensionContext?.inputItems.first as? NSExtensionItem,
-            let providers = item.attachments
-        else { return finish() }
+        let items = (extensionContext?.inputItems as? [NSExtensionItem]) ?? []
 
-        let fallbackTitle = item.attributedContentText?.string ?? ""
         var urlString: String?
         var text: String?
         var jsTitle: String?
+        var fallbackTitle = ""
+        var attachments: [SharedInbox.Attachment] = []
 
-        for provider in providers {
-            if provider.hasItemConformingToTypeIdentifier(UTType.propertyList.identifier) {
-                if let results = await loadJSResults(provider) {
-                    if let title = results["title"] { jsTitle = title }
-                    if urlString == nil { urlString = results["url"] }
-                    if text == nil { text = results["selection"] }
+        for item in items {
+            if fallbackTitle.isEmpty, let content = item.attributedContentText?.string, !content.isEmpty {
+                fallbackTitle = content
+            }
+            for provider in item.attachments ?? [] {
+                // Web page (JS results) takes priority — it carries url/title/selection.
+                if provider.hasItemConformingToTypeIdentifier(UTType.propertyList.identifier) {
+                    if let results = await loadJSResults(provider) {
+                        if let title = results["title"], !title.isEmpty { jsTitle = title }
+                        if urlString == nil { urlString = results["url"] }
+                        if text == nil, let selection = results["selection"], !selection.isEmpty { text = selection }
+                    }
+                } else if provider.hasItemConformingToTypeIdentifier(UTType.image.identifier) {
+                    if let attachment = await storeFile(provider, conformingTo: .image, isImage: true) {
+                        attachments.append(attachment)
+                    }
+                } else if provider.hasItemConformingToTypeIdentifier(UTType.pdf.identifier) {
+                    if let attachment = await storeFile(provider, conformingTo: .pdf, isImage: false) {
+                        attachments.append(attachment)
+                    }
+                } else if provider.hasItemConformingToTypeIdentifier(UTType.url.identifier) {
+                    if let loaded = await loadURLString(provider) { urlString = loaded }
+                } else if provider.hasItemConformingToTypeIdentifier(UTType.plainText.identifier) {
+                    if let loaded = await loadString(provider, UTType.plainText.identifier), !loaded.isEmpty {
+                        text = loaded
+                    }
+                } else if provider.hasItemConformingToTypeIdentifier(UTType.item.identifier) {
+                    // Generic file fallback (documents, archives, etc.).
+                    if let attachment = await storeFile(provider, conformingTo: .item, isImage: false) {
+                        attachments.append(attachment)
+                    }
                 }
-            } else if provider.hasItemConformingToTypeIdentifier(UTType.url.identifier) {
-                if let loaded = await loadURLString(provider) { urlString = loaded }
-            } else if provider.hasItemConformingToTypeIdentifier(UTType.plainText.identifier) {
-                if let loaded = await loadString(provider, UTType.plainText.identifier) { text = loaded }
             }
         }
 
-        let title: String
-        if let jsTitle, !jsTitle.isEmpty {
-            title = jsTitle
-        } else if !fallbackTitle.isEmpty {
-            title = fallbackTitle
-        } else {
-            title = urlString ?? "Shared Page"
-        }
+        let title = [jsTitle, fallbackTitle, attachments.first?.filename, urlString]
+            .compactMap { $0 }
+            .first(where: { !$0.isEmpty }) ?? "Shared"
 
-        SharedInbox.append(SharedInbox.Item(title: title, urlString: urlString, text: text))
+        // Only enqueue if we actually captured something useful.
+        if urlString != nil || text != nil || !attachments.isEmpty {
+            SharedInbox.append(SharedInbox.Item(
+                title: title,
+                urlString: urlString,
+                text: text,
+                attachments: attachments
+            ))
+        }
         finish()
     }
 
@@ -93,6 +116,30 @@ final class ShareViewController: UIViewController {
                 if let url = results?["url"] as? String { output["url"] = url }
                 if let selection = results?["selection"] as? String { output["selection"] = selection }
                 continuation.resume(returning: output.isEmpty ? nil : output)
+            }
+        }
+    }
+
+    /// Copies the provider's file representation into the inbox (memory-safe for
+    /// large files — never loads the whole blob into memory).
+    private func storeFile(_ provider: NSItemProvider, conformingTo type: UTType, isImage: Bool) async -> SharedInbox.Attachment? {
+        // Prefer the most specific concrete type the provider offers.
+        let typeID = provider.registeredTypeIdentifiers.first {
+            UTType($0)?.conforms(to: type) ?? false
+        } ?? type.identifier
+
+        return await withCheckedContinuation { continuation in
+            provider.loadFileRepresentation(forTypeIdentifier: typeID) { url, _ in
+                guard let url else { continuation.resume(returning: nil); return }
+                // The temp URL is valid only inside this completion — copy now.
+                let resolvedType = (try? url.resourceValues(forKeys: [.contentTypeKey]).contentType)?.identifier ?? typeID
+                let attachment = SharedInbox.storeAttachment(
+                    at: url,
+                    filename: url.lastPathComponent,
+                    contentType: resolvedType,
+                    isImage: isImage
+                )
+                continuation.resume(returning: attachment)
             }
         }
     }

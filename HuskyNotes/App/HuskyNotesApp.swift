@@ -20,6 +20,9 @@ struct HuskyNotesApp: App {
     /// The app-wide theme store. Owned here, injected into every view.
     @State private var themeStore = ThemeStore()
 
+    /// Optional whole-app Face ID / Touch ID lock.
+    @State private var appLock = AppLock()
+
     /// Drives draining the Share Extension inbox when the app becomes active.
     @Environment(\.scenePhase) private var scenePhase
 
@@ -27,12 +30,31 @@ struct HuskyNotesApp: App {
         WindowGroup {
             RootView()
                 .environment(themeStore)
+                .environment(appLock)
                 // Match the system appearance to the active theme so SwiftUI
                 // chrome (menus, alerts) reads correctly in light/dark themes.
                 .preferredColorScheme(themeStore.active.isDark ? .dark : .light)
-                .onAppear { drainSharedInbox() }
+                // Whole-app lock: covers all note content until authenticated.
+                .overlay {
+                    if appLock.isLocked {
+                        LockScreenView()
+                            .environment(themeStore)
+                            .environment(appLock)
+                    }
+                }
+                .onAppear {
+                    seedWelcomeNoteIfNeeded()
+                    drainSharedInbox()
+                    publishFolders()
+                    handleQuickCapture()
+                }
                 .onChange(of: scenePhase) { _, phase in
-                    if phase == .active { drainSharedInbox() }
+                    appLock.handleScenePhase(phase)
+                    if phase == .active {
+                        drainSharedInbox()
+                        publishFolders()
+                        handleQuickCapture()
+                    }
                 }
         }
         .modelContainer(PersistenceController.shared.container)
@@ -51,6 +73,17 @@ struct HuskyNotesApp: App {
                 Button("Export All Notes…") { exportAllNotes() }
                     .keyboardShortcut("e", modifiers: [.command, .shift])
                 Button("Export as Single File…") { exportCombinedNotes() }
+            }
+
+            // Own the Print command so ⌘P prints the open note. Without this, ⌘P
+            // hits AppKit's default (unhandled) print action and shows the
+            // "application does not support printing" alert. The open
+            // `NoteEditorView` listens for this and prints itself.
+            CommandGroup(replacing: .printItem) {
+                Button("Print…") {
+                    NotificationCenter.default.post(name: .huskyPrintNote, object: nil)
+                }
+                .keyboardShortcut("p", modifiers: .command)
             }
 
             // The Format menu — Bear-style text commands routed to the focused
@@ -77,8 +110,16 @@ struct HuskyNotesApp: App {
                     .keyboardShortcut("u", modifiers: .command)
                 Button("Strikethrough") { MarkdownCommand.strikethrough.send() }
                     .keyboardShortcut("u", modifiers: [.command, .shift])
-                Button("Highlight") { MarkdownCommand.highlight.send() }
-                    .keyboardShortcut("h", modifiers: [.command, .control])
+                Menu("Highlight") {
+                    Button("Yellow") { MarkdownCommand.highlight(.yellow).send() }
+                        .keyboardShortcut("h", modifiers: [.command, .control])
+                    Button("Green") { MarkdownCommand.highlight(.green).send() }
+                    Button("Pink") { MarkdownCommand.highlight(.pink).send() }
+                    Button("Orange") { MarkdownCommand.highlight(.orange).send() }
+                    Button("Purple") { MarkdownCommand.highlight(.purple).send() }
+                    Divider()
+                    Button("Remove Highlight") { MarkdownCommand.removeHighlight.send() }
+                }
                 Divider()
                 Button("Link") { MarkdownCommand.link.send() }
                     .keyboardShortcut("k", modifiers: .command)
@@ -111,25 +152,93 @@ struct HuskyNotesApp: App {
         Settings {
             SettingsView()
                 .environment(themeStore)
+                .environment(appLock)
                 .modelContainer(PersistenceController.shared.container)
         }
         #endif
+    }
+
+    /// UserDefaults flag recording that the welcome note seeding has been
+    /// attempted, so it never runs twice (even if the user deletes the note).
+    private static let didSeedWelcomeKey = "huskynotes.didSeedWelcome"
+
+    /// Seeds the welcome / demo note once per device. The flag guarantees it runs
+    /// a single time — so it never repeats and never reappears after the user
+    /// deletes it — while still showing up as a one-time welcome on existing
+    /// installs. The note is pinned and fully editable/deletable.
+    @MainActor
+    private func seedWelcomeNoteIfNeeded() {
+        let defaults = UserDefaults.standard
+        guard !defaults.bool(forKey: Self.didSeedWelcomeKey) else { return }
+        defaults.set(true, forKey: Self.didSeedWelcomeKey)
+
+        let context = PersistenceController.shared.container.mainContext
+        let note = Note(body: WelcomeNote.markdown, createdAt: .now, modifiedAt: .now, isPinned: true)
+        note.recomputeTitle()
+        context.insert(note)
+        // Build the smart lists for the demo's inline #tags.
+        TagReconciler.reconcile(note, in: context)
     }
 
     /// Turns any pending Share Extension items (captured web pages) into notes,
     /// then clears the inbox. No-ops where the App Group isn't available.
     @MainActor
     private func drainSharedInbox() {
-        let items = SharedInbox.load()
+        let items = SharedInbox.pendingItems()
         guard !items.isEmpty else { return }
         let context = PersistenceController.shared.container.mainContext
         for item in items {
             let note = Note(body: item.markdown, createdAt: item.date, modifiedAt: item.date)
             note.recomputeTitle()
             context.insert(note)
+
+            // Import any captured attachments (images / PDFs / files).
+            for ref in item.attachments {
+                guard let data = SharedInbox.attachmentData(for: ref) else { continue }
+                let attachment = Attachment(
+                    filename: ref.filename,
+                    data: data,
+                    contentType: ref.contentType,
+                    byteCount: data.count
+                )
+                attachment.note = note
+                context.insert(attachment)
+                var current = note.attachments ?? []
+                current.append(attachment)
+                note.attachments = current
+                AttachmentOCR.recognizeIfNeeded(attachment)
+            }
+
             TagReconciler.reconcile(note, in: context)
+            // Remove only after the note is fully built — a crash mid-drain
+            // simply retries the remaining items next launch (nothing is lost).
+            SharedInbox.remove(item)
         }
-        SharedInbox.clear()
+    }
+
+    /// Publishes the user's folder names to the App Group so the "New Note"
+    /// widget's folder picker can offer them (the widget can't read SwiftData).
+    @MainActor
+    private func publishFolders() {
+        let context = PersistenceController.shared.container.mainContext
+        let folders = (try? context.fetch(FetchDescriptor<Folder>())) ?? []
+        QuickCapture.publishFolderNames(folders.map(\.name).filter { !$0.isEmpty })
+    }
+
+    /// Consumes a pending quick-capture request (widget / Action Button) and
+    /// asks `RootView` to create + open a new note in the chosen folder.
+    @MainActor
+    private func handleQuickCapture() {
+        let request = QuickCapture.consumePendingNewNote()
+        guard request.pending else { return }
+        // Defer so `RootView`'s observer is mounted on a cold launch.
+        DispatchQueue.main.async {
+            NotificationCenter.default.post(
+                name: .huskyCreateNote,
+                object: nil,
+                userInfo: request.folderName.map { ["folder": $0] }
+            )
+        }
     }
 
     #if os(macOS)
@@ -166,4 +275,13 @@ extension Notification.Name {
     /// Posted when the user invokes the "New Note" menu command (macOS).
     /// - TODO: Wire this through to `NoteListView`'s insert in a later milestone.
     static let huskyNewNote = Notification.Name("huskynotes.newNote")
+
+    /// Posted to ask `RootView` to create + open a new note (quick capture from
+    /// the widget / Action Button). `userInfo["folder"]` optionally names a
+    /// target folder.
+    static let huskyCreateNote = Notification.Name("huskynotes.createNote")
+
+    /// Posted by the File ▸ Print command (⌘P) on macOS; the open
+    /// ``NoteEditorView`` responds by printing its note.
+    static let huskyPrintNote = Notification.Name("huskynotes.printNote")
 }

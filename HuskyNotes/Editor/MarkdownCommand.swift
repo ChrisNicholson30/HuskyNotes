@@ -24,8 +24,11 @@ enum MarkdownCommand: Equatable, Sendable {
     case underline
     /// Toggle `~~strikethrough~~` (GFM).
     case strikethrough
-    /// Toggle `==highlight==`.
-    case highlight
+    /// Apply a highlighter colour around the selection (stored as
+    /// `<mark class="hl-…">`). Re-applying the same colour removes it.
+    case highlight(HighlightColor)
+    /// Remove any highlighter wrapping the selection / caret.
+    case removeHighlight
     /// Toggle inline `` `code` ``.
     case inlineCode
     /// Wrap the selection in a fenced code block.

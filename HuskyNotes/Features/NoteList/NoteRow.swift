@@ -52,9 +52,20 @@ struct NoteRow: View {
                         .foregroundStyle(theme.textSecondary.swiftUIColor)
                 }
 
-                Text(note.modifiedAt, format: .relative(presentation: .named))
-                    .font(.caption2)
-                    .foregroundStyle(theme.textSecondary.swiftUIColor)
+                HStack(spacing: 6) {
+                    if let folder = note.folder {
+                        HStack(spacing: 3) {
+                            folderGlyph(folder)
+                            Text(folder.name.isEmpty ? "Folder" : folder.name)
+                                .lineLimit(1)
+                        }
+                        .font(.caption2)
+                        .foregroundStyle(folderColor(folder))
+                    }
+                    Text(note.modifiedAt, format: .relative(presentation: .named))
+                        .font(.caption2)
+                        .foregroundStyle(theme.textSecondary.swiftUIColor)
+                }
             }
 
             Spacer(minLength: 0)
@@ -62,12 +73,30 @@ struct NoteRow: View {
         .padding(.vertical, 4)
     }
 
-    /// Title to display, falling back to a placeholder for blank notes.
+    /// Title to display, with Markdown syntax stripped, falling back to a
+    /// placeholder for blank notes.
     private var displayTitle: String {
-        note.title.isEmpty ? "New Note" : note.title
+        let clean = MarkdownPlainText.from(note.title).trimmingCharacters(in: .whitespacesAndNewlines)
+        return clean.isEmpty ? "New Note" : clean
     }
 
-    /// A one-line snippet: the body with its first (title) line removed.
+    /// The folder's icon — its emoji if set, otherwise a colour-tinted glyph.
+    @ViewBuilder
+    private func folderGlyph(_ folder: Folder) -> some View {
+        if let emoji = folder.icon, !emoji.isEmpty {
+            Text(emoji)
+        } else {
+            Image(systemName: "folder.fill")
+        }
+    }
+
+    /// The folder's colour, falling back to the theme accent.
+    private func folderColor(_ folder: Folder) -> Color {
+        folder.colorHex.map { HexColor($0).swiftUIColor } ?? theme.accent.swiftUIColor
+    }
+
+    /// A one-line snippet: the body with its first (title) line removed and the
+    /// Markdown syntax stripped, so the preview reads as plain prose.
     private var snippet: String {
         let lines = note.body.split(separator: "\n", omittingEmptySubsequences: false)
         // Drop the first non-empty line (which becomes the title) and join the rest.
@@ -78,8 +107,34 @@ struct NoteRow: View {
             seenTitle = true
             return true
         }
-        return remainder
-            .joined(separator: " ")
+        let plain = MarkdownPlainText.from(remainder.joined(separator: "\n"))
+        return plain
+            .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
             .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+}
+
+/// Strips Markdown syntax to readable plain text — for note-list titles and
+/// snippets, which should read as prose, not source.
+enum MarkdownPlainText {
+    static func from(_ markdown: String) -> String {
+        var s = markdown
+        func sub(_ pattern: String, _ replacement: String) {
+            s = s.replacingOccurrences(of: pattern, with: replacement, options: .regularExpression)
+        }
+        // HTML tags (e.g. <mark class="hl-pink">, </mark>, <u>).
+        sub("<[^>]+>", "")
+        // Images / links / wiki links → keep the visible text, drop the target.
+        sub("!\\[([^\\]]*)\\]\\([^)]*\\)", "$1")
+        sub("\\[([^\\]]*)\\]\\([^)]*\\)", "$1")
+        sub("\\[\\[([^\\]]+)\\]\\]", "$1")
+        // Leading block markers per line: heading #, quote >, bullets, task boxes,
+        // ordered numbers.
+        sub("(?m)^[ \\t]{0,3}(#{1,6}[ \\t]+|>[ \\t]?|[-*+][ \\t]+(\\[[ xX]\\][ \\t]+)?|\\d+[.)][ \\t]+)", "")
+        // Inline emphasis / code / highlight delimiters.
+        for marker in ["**", "__", "~~", "==", "`", "*"] {
+            s = s.replacingOccurrences(of: marker, with: "")
+        }
+        return s
     }
 }

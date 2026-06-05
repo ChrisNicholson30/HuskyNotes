@@ -51,7 +51,13 @@ enum NoteSearch {
             }
         }
         if !query.terms.isEmpty {
-            let haystack = (note.title + "\n" + note.body).lowercased()
+            var haystack = (note.title + "\n" + note.body).lowercased()
+            // Include text recognized in attachments (OCR) so a search finds words
+            // inside scans, photos and PDFs — not just the typed body.
+            let recognized = (note.attachments ?? [])
+                .compactMap { $0.recognizedText }
+                .joined(separator: "\n")
+            if !recognized.isEmpty { haystack += "\n" + recognized.lowercased() }
             for term in query.terms where !haystack.contains(term) {
                 return false
             }

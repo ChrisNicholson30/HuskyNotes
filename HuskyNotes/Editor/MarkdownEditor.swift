@@ -23,6 +23,29 @@
 
 import SwiftUI
 
+// MARK: - EditorController
+
+/// A lightweight handle that lets a parent view drive the live editor — e.g.
+/// inserting an attachment reference at the current caret. The editor's
+/// coordinator registers its implementation when the text view is created;
+/// calls made before that (or after teardown) are simply ignored.
+@MainActor
+final class EditorController {
+    /// Set by the coordinator; inserts Markdown at the caret / over the selection.
+    fileprivate var insertHandler: ((String) -> Void)?
+
+    /// Set by the coordinator; makes the editor first responder (opens the
+    /// keyboard on iOS).
+    fileprivate var focusHandler: (() -> Void)?
+
+    /// Inserts `markdown` at the current caret in the focused editor.
+    func insert(_ markdown: String) { insertHandler?(markdown) }
+
+    /// Focuses the editor so the user can type immediately (and the iOS keyboard
+    /// appears).
+    func focus() { focusHandler?() }
+}
+
 // MARK: - MarkdownEditor
 
 #if os(iOS)
@@ -36,6 +59,9 @@ struct MarkdownEditor: UIViewRepresentable {
 
     /// The active theme supplying every colour, font and metric.
     let theme: Theme
+
+    /// Optional handle for parent-driven insertion (e.g. attachments at caret).
+    var controller: EditorController? = nil
 
     func makeCoordinator() -> Coordinator {
         Coordinator(text: $text, theme: theme)
@@ -58,6 +84,12 @@ struct MarkdownEditor: UIViewRepresentable {
         textView.keyboardDismissMode = .interactive
 
         context.coordinator.textView = textView
+        controller?.insertHandler = { [weak coordinator = context.coordinator] markdown in
+            coordinator?.insertAtCaret(markdown)
+        }
+        controller?.focusHandler = { [weak textView] in
+            textView?.becomeFirstResponder()
+        }
 
         // A scrollable formatting toolbar above the keyboard (iPhone/iPad), since
         // the menu-bar Format commands only exist on macOS.
@@ -69,11 +101,15 @@ struct MarkdownEditor: UIViewRepresentable {
         )
 
         // Tap a rendered checkbox to toggle it (additive — doesn't block editing).
+        // It recognises *simultaneously* with the text view's own tap gesture
+        // (via the coordinator delegate) so a single tap still places the caret —
+        // without it, this recogniser swallows the tap and you'd need a long press.
         let tap = UITapGestureRecognizer(
             target: context.coordinator,
             action: #selector(Coordinator.handleCheckboxTap(_:))
         )
         tap.cancelsTouchesInView = false
+        tap.delegate = context.coordinator
         textView.addGestureRecognizer(tap)
 
         // Open with the caret at the end so a freshly created "# " note is ready
@@ -112,6 +148,9 @@ struct MarkdownEditor: NSViewRepresentable {
     /// The active theme supplying every colour, font and metric.
     let theme: Theme
 
+    /// Optional handle for parent-driven insertion (e.g. attachments at caret).
+    var controller: EditorController? = nil
+
     func makeCoordinator() -> Coordinator {
         Coordinator(text: $text, theme: theme)
     }
@@ -134,7 +173,9 @@ struct MarkdownEditor: NSViewRepresentable {
         textView.selectedTextAttributes = [
             .backgroundColor: theme.selection.platformColor
         ]
-        textView.textContainerInset = NSSize(width: 12, height: 16)
+        // A modest leading/trailing gutter now that the column is left-aligned
+        // (no longer centred with large margins on wide windows).
+        textView.textContainerInset = NSSize(width: 20, height: 16)
         textView.isVerticallyResizable = true
         textView.isHorizontallyResizable = false
         textView.autoresizingMask = [.width]
@@ -147,6 +188,13 @@ struct MarkdownEditor: NSViewRepresentable {
         scrollView.backgroundColor = theme.background.platformColor
 
         context.coordinator.textView = textView
+        controller?.insertHandler = { [weak coordinator = context.coordinator] markdown in
+            coordinator?.insertAtCaret(markdown)
+        }
+        controller?.focusHandler = { [weak textView] in
+            guard let textView else { return }
+            textView.window?.makeFirstResponder(textView)
+        }
         // Open with the caret at the end so a freshly created "# " note is ready
         // to type the title into.
         let caret = NSRange(location: (text as NSString).length, length: 0)
@@ -221,6 +269,31 @@ extension MarkdownEditor {
         /// selection during `apply` itself fires selection-change callbacks.
         private var isApplying = false
 
+        /// Element ranges (from the last styling) whose markers reveal while the
+        /// caret is inside them — now just links, whose URL must stay editable.
+        /// (Emphasis/code/heading/quote markers are always concealed, so they
+        /// never need a caret-driven re-style.) Lets `handleSelectionChanged`
+        /// re-style only when the caret crosses one of these boundaries — never on
+        /// plain caret moves, which were fighting the user's taps, pasting and
+        /// caret placement. Empty for notes without links, so the caret glides.
+        private var concealElements: [NSRange] = []
+
+        /// The elements currently revealed (those the caret is inside); a re-style
+        /// is needed only when this set changes.
+        private var lastRevealSignature: [NSRange] = []
+
+        /// Ranges of concealed *trailing* delimiters from the last styling (closing
+        /// `**`, `` ` ``, `</mark>`, …). They're zero-width, so the caret sits just
+        /// before them at a span's visual end; `adjustedReturnLocation` skips a
+        /// Return past them so the closing marker isn't pushed onto the next line.
+        private var trailingHiddenMarkers: [NSRange] = []
+
+        /// The last caret/selection seen *while the editor was first responder*.
+        /// Parent-driven insertions (attachments) fall back to this: presenting a
+        /// file importer resigns first responder and collapses the live selection
+        /// to the document end, which is why attachments were landing at the bottom.
+        private var lastSelection: NSRange?
+
         /// The styler that turns Markdown source into a themed attributed string.
         private let styler = MarkdownStyler()
 
@@ -253,8 +326,10 @@ extension MarkdownEditor {
 
             let length = (source as NSString).length
             let desired = clampedSelection(selection ?? currentSelection(of: textView), length: length)
-            let revealed = revealedRange(in: source, for: desired)
-            let styled = styler.attributedString(for: source, theme: theme, revealing: revealed)
+            let styled = styler.attributedString(for: source, theme: theme, caret: desired)
+            concealElements = styled.concealElements
+            trailingHiddenMarkers = styled.trailingHiddenMarkers
+            lastRevealSignature = revealSignature(for: desired)
 
             #if os(iOS)
             let storage = textView.textStorage
@@ -266,9 +341,9 @@ extension MarkdownEditor {
             // update only the *attributes* in place. Replacing the whole string
             // tears down the insertion point on macOS — pressing Return would make
             // the caret vanish until you clicked again.
-            restyle(storage, with: styled, sameCharacters: storage.string == source)
+            restyle(storage, with: styled.attributed, sameCharacters: storage.string == source)
 
-            let clamped = clampedSelection(desired, length: styled.length)
+            let clamped = clampedSelection(desired, length: styled.attributed.length)
             #if os(iOS)
             textView.selectedRange = clamped
             #elseif os(macOS)
@@ -309,10 +384,36 @@ extension MarkdownEditor {
             apply(source: current, to: textView)
         }
 
-        /// Re-conceals/reveals markers when the caret moves to a different line.
+        /// Re-conceals/reveals markers when the caret moves to a different
+        /// paragraph. Within the same paragraph it does nothing, so tapping,
+        /// selecting and pasting aren't disrupted by a re-style that would reset
+        /// the caret. The re-style is deferred to the next runloop so it never
+        /// mutates the text storage *during* a tap that's grabbing first responder
+        /// (which would drop focus and leave the note feeling "uneditable").
         fileprivate func handleSelectionChanged(_ textView: PlatformTextView) {
             guard !isApplying, !hasMarkedText(textView) else { return }
-            apply(source: currentText(of: textView), to: textView)
+            // Remember where the user actually is, so an attachment inserted after
+            // a file picker (which drops first responder) lands at the caret — not
+            // at the end of the note.
+            if isFirstResponder(textView) {
+                lastSelection = currentSelection(of: textView)
+            }
+            // Only re-style when the caret crosses into/out of a styled span,
+            // which is the only time the concealment must change. Moving within
+            // plain text (or within the same span) leaves the signature unchanged.
+            let signature = revealSignature(for: currentSelection(of: textView))
+            if signature == lastRevealSignature { return }
+            lastRevealSignature = signature
+            DispatchQueue.main.async { [weak self, weak textView] in
+                guard let self, let textView, !self.isApplying, !self.hasMarkedText(textView) else { return }
+                self.apply(source: self.currentText(of: textView), to: textView)
+            }
+        }
+
+        /// The elements whose markers should be revealed for `caret` (those it
+        /// touches). Re-styling is needed only when this set changes.
+        private func revealSignature(for caret: NSRange) -> [NSRange] {
+            concealElements.filter { MarkdownStyler.caret(caret, touches: $0) }
         }
 
         /// Applies a formatting command broadcast from the `Format` menu — but
@@ -331,6 +432,81 @@ extension MarkdownEditor {
         func perform(_ command: MarkdownCommand) {
             guard let textView else { return }
             perform(command, on: textView)
+        }
+
+        /// Continues a Markdown list when Return is pressed inside a list item
+        /// (next bullet/number, or end the list on an empty item). Returns
+        /// `true` if it handled the newline; `false` to let the editor insert a
+        /// normal newline.
+        fileprivate func continueListOnReturn(in textView: PlatformTextView) -> Bool {
+            let current = currentText(of: textView)
+            let selection = currentSelection(of: textView)
+            guard let result = MarkdownFormatting.handleReturn(text: current, selection: selection) else {
+                return false
+            }
+            text.wrappedValue = result.text
+            apply(source: result.text, to: textView, selection: result.selection)
+            return true
+        }
+
+        /// The location at which a newline should be inserted for a Return pressed
+        /// with the caret at `location`: any concealed *trailing* delimiters
+        /// immediately following the caret are skipped, so the newline lands
+        /// *after* the whole styled span rather than splitting it (which would
+        /// strand the closing `**`/`` ` `` on the next line). Returns `location`
+        /// unchanged when no trailing markers follow it.
+        private func adjustedReturnLocation(for location: Int) -> Int {
+            var loc = location
+            var advanced = true
+            while advanced {
+                advanced = false
+                for marker in trailingHiddenMarkers where marker.location == loc && marker.length > 0 {
+                    loc = marker.location + marker.length
+                    advanced = true
+                    break
+                }
+            }
+            return loc
+        }
+
+        /// Inserts a newline at `location`, publishing the change and restyling with
+        /// the caret on the new line. Used when a Return must be redirected past
+        /// concealed trailing delimiters so the span stays intact.
+        fileprivate func insertNewline(at location: Int, in textView: PlatformTextView) {
+            let ns = currentText(of: textView) as NSString
+            let loc = min(max(location, 0), ns.length)
+            let m = NSMutableString(string: ns)
+            m.insert("\n", at: loc)
+            let newText = m as String
+            text.wrappedValue = newText
+            apply(source: newText, to: textView, selection: NSRange(location: loc + 1, length: 0))
+        }
+
+        /// Whether a Return with a collapsed caret at `location` needs redirecting
+        /// past concealed trailing delimiters; returns the adjusted location, or
+        /// `nil` if a normal newline at `location` is fine.
+        fileprivate func returnRedirect(forCaretAt location: Int) -> Int? {
+            let adjusted = adjustedReturnLocation(for: location)
+            return adjusted == location ? nil : adjusted
+        }
+
+        /// Inserts an attachment reference (or any Markdown) at the caret,
+        /// placing it on its own line, then restyles. Driven by `EditorController`.
+        func insertAtCaret(_ markdown: String) {
+            guard let textView else { return }
+            // Prefer the live caret while focused; otherwise the last caret seen
+            // while focused (a file importer resigns first responder and collapses
+            // the live selection to the document end).
+            let selection = isFirstResponder(textView)
+                ? currentSelection(of: textView)
+                : (lastSelection ?? currentSelection(of: textView))
+            let result = MarkdownFormatting.insertAttachment(
+                markdown,
+                into: currentText(of: textView),
+                at: selection
+            )
+            text.wrappedValue = result.text
+            apply(source: result.text, to: textView, selection: result.selection)
         }
 
         /// The shared formatting path: rewrite the source + selection and restyle.
@@ -435,13 +611,6 @@ extension MarkdownEditor {
             #endif
         }
 
-        /// The paragraph range containing `selection`; its markers stay revealed.
-        private func revealedRange(in source: String, for selection: NSRange) -> NSRange? {
-            let ns = source as NSString
-            guard ns.length > 0 else { return nil }
-            return ns.paragraphRange(for: clampedSelection(selection, length: ns.length))
-        }
-
         /// Clamps a selection range to the bounds of a string of `length`.
         private func clampedSelection(_ range: NSRange, length: Int) -> NSRange {
             let location = min(max(range.location, 0), length)
@@ -456,6 +625,41 @@ extension MarkdownEditor {
 
 #if os(iOS)
 extension MarkdownEditor.Coordinator: UITextViewDelegate {
+    /// Intercepts a plain Return to continue a list; all other edits proceed
+    /// normally.
+    func textView(_ textView: UITextView,
+                  shouldChangeTextIn range: NSRange,
+                  replacementText text: String) -> Bool {
+        guard text == "\n", textView.markedTextRange == nil else { return true }
+
+        // Re-entrancy note: mutating the text storage inside `shouldChangeTextIn`
+        // (while UIKit is mid-edit and we're cancelling its insert) can corrupt the
+        // text view's state — so we block the default newline (`return false`) and
+        // perform our own edit on the next runloop.
+
+        // 1. Continue a Markdown list when the caret is in a list item.
+        if MarkdownFormatting.handleReturn(text: currentText(of: textView), selection: range) != nil {
+            DispatchQueue.main.async { [weak self, weak textView] in
+                guard let self, let textView else { return }
+                _ = self.continueListOnReturn(in: textView)
+            }
+            return false
+        }
+
+        // 2. Otherwise, if concealed trailing delimiters follow a collapsed caret,
+        //    redirect the newline past them so the closing marker isn't stranded on
+        //    the next line. A ranged Return just replaces the selection normally.
+        if range.length == 0, let redirect = returnRedirect(forCaretAt: range.location) {
+            DispatchQueue.main.async { [weak self, weak textView] in
+                guard let self, let textView else { return }
+                self.insertNewline(at: redirect, in: textView)
+            }
+            return false
+        }
+
+        return true
+    }
+
     func textViewDidChange(_ textView: UITextView) {
         handleTextChanged(textView)
     }
@@ -464,8 +668,37 @@ extension MarkdownEditor.Coordinator: UITextViewDelegate {
         handleSelectionChanged(textView)
     }
 }
+
+extension MarkdownEditor.Coordinator: UIGestureRecognizerDelegate {
+    /// Recognise the checkbox tap *alongside* the text view's built-in gestures,
+    /// so a single tap still positions the caret rather than being swallowed
+    /// (which forced a long press before the caret appeared).
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
+                           shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
+        true
+    }
+}
 #elseif os(macOS)
 extension MarkdownEditor.Coordinator: NSTextViewDelegate {
+    /// Intercepts the Return key to continue a list; returns `true` to consume
+    /// it, `false` to let `NSTextView` insert a normal newline.
+    func textView(_ textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
+        guard commandSelector == #selector(NSResponder.insertNewline(_:)),
+              !textView.hasMarkedText() else { return false }
+
+        // Continue a Markdown list if the caret is in a list item.
+        if continueListOnReturn(in: textView) { return true }
+
+        // Otherwise redirect the newline past any concealed trailing delimiters so
+        // the closing marker isn't stranded on the next line.
+        let selection = textView.selectedRange()
+        if selection.length == 0, let redirect = returnRedirect(forCaretAt: selection.location) {
+            insertNewline(at: redirect, in: textView)
+            return true
+        }
+        return false
+    }
+
     func textDidChange(_ notification: Notification) {
         guard let textView = notification.object as? NSTextView else { return }
         handleTextChanged(textView)

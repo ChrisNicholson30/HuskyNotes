@@ -36,7 +36,7 @@ struct PersistenceController {
     static let syncEnabledKey = "huskynotes.syncEnabled"
 
     /// The full schema: every `@Model` type the app persists.
-    private static let schema = Schema([Note.self, Tag.self, Attachment.self])
+    private static let schema = Schema([Note.self, Tag.self, Folder.self, Attachment.self, TodoItem.self])
 
     /// Creates a container.
     ///
@@ -74,12 +74,52 @@ struct PersistenceController {
             // Couldn't stand up the cloud store — fall back to local below.
         }
 
-        do {
-            container = try ModelContainer(for: Self.schema, configurations: [local])
-            isSyncing = false
-        } catch {
-            // A container we cannot create is unrecoverable; fail loudly in dev.
-            fatalError("Failed to create ModelContainer: \(error)")
+        // Try the on-disk (or in-memory) store.
+        if let container = try? ModelContainer(for: Self.schema, configurations: [local]) {
+            self.container = container
+            self.isSyncing = false
+            return
+        }
+
+        // The store failed to open — most often an incompatible schema left by an
+        // earlier build. Rather than crash on every launch (a crash loop the user
+        // can't escape), move the old store aside — kept as a `.bak` so it can be
+        // recovered — and start fresh.
+        if !inMemory {
+            Self.relocateStore(at: local.url)
+            if let container = try? ModelContainer(for: Self.schema, configurations: [local]) {
+                self.container = container
+                self.isSyncing = false
+                return
+            }
+        }
+
+        // Last resort: an in-memory store so the app still launches instead of
+        // crashing. Data won't persist, but the user isn't locked out.
+        if let memory = try? ModelContainer(
+            for: Self.schema,
+            configurations: [ModelConfiguration(schema: Self.schema, isStoredInMemoryOnly: true)]
+        ) {
+            self.container = memory
+            self.isSyncing = false
+            return
+        }
+
+        // Truly unrecoverable (cannot even build an in-memory store) — this
+        // effectively never happens.
+        fatalError("Could not create any ModelContainer.")
+    }
+
+    /// Moves an unreadable store (and its `-wal`/`-shm` sidecars) aside to a
+    /// `.bak`, so a fresh store can be created without destroying the old data.
+    private static func relocateStore(at url: URL) {
+        let fileManager = FileManager.default
+        for suffix in ["", "-wal", "-shm"] {
+            let source = URL(fileURLWithPath: url.path + suffix)
+            guard fileManager.fileExists(atPath: source.path) else { continue }
+            let backup = URL(fileURLWithPath: source.path + ".bak")
+            try? fileManager.removeItem(at: backup)
+            try? fileManager.moveItem(at: source, to: backup)
         }
     }
 
@@ -90,7 +130,7 @@ struct PersistenceController {
         let context = controller.container.mainContext
 
         let welcome = Note(
-            body: Self.welcomeMarkdown,
+            body: WelcomeNote.markdown,
             createdAt: .now,
             modifiedAt: .now,
             isPinned: true
@@ -104,24 +144,4 @@ struct PersistenceController {
 
         return controller.container
     }()
-
-    /// Sample Markdown used to seed the preview container. Mirrors
-    /// `Resources/SampleNotes/welcome.md`.
-    private static let welcomeMarkdown = """
-    # Welcome to Husky Notes
-
-    Markdown notes you'll love, sync you can trust.
-
-    - Live, themed rendering
-    - Plain `.md` underneath — always yours
-    - Six beautiful themes
-
-    > Reliability over cleverness.
-
-    ```swift
-    let store = try ModelContainer(for: Note.self)
-    ```
-
-    Tag things inline like #welcome and they become smart lists.
-    """
 }

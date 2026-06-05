@@ -23,17 +23,24 @@ fi
 mkdir -p "$SET"
 
 # iOS icons must be opaque (no alpha). Flatten the source onto a background
-# (Blue Husky navy by default; override with $ICON_BG=RRGGBB) before resizing.
-ICON_BG="${ICON_BG:-0A0D14}"
+# before resizing. Two variants: the light/default icon (white) and the
+# dark-appearance icon (Blue Husky navy) shown in dark mode on iPhone/iPad.
+# Override with $ICON_BG / $DARK_BG (RRGGBB).
+ICON_BG="${ICON_BG:-FFFFFF}"
+DARK_BG="${DARK_BG:-0A0D14}"
 MASTER="$(mktemp -t husky-icon-master).png"
+DARK_MASTER="$(mktemp -t husky-icon-dark-master).png"
 xcrun swift "$(dirname "$0")/flatten-icon.swift" "$SRC" "$MASTER" "$ICON_BG"
+xcrun swift "$(dirname "$0")/flatten-icon.swift" "$SRC" "$DARK_MASTER" "$DARK_BG"
 
 gen() { # gen <outfile> <pixelSize>
   sips -s format png -z "$2" "$2" "$MASTER" --out "$SET/$1" >/dev/null
 }
 
-echo "Generating icons from $SRC (background #$ICON_BG) …"
+echo "Generating icons from $SRC (light #$ICON_BG / dark #$DARK_BG) …"
 gen "icon-ios-1024.png" 1024
+# Dark-appearance iOS icon (shown in dark mode on iPhone/iPad).
+sips -s format png -z 1024 1024 "$DARK_MASTER" --out "$SET/icon-ios-1024-dark.png" >/dev/null
 gen "icon-mac-16.png"     16
 gen "icon-mac-32.png"     32
 gen "icon-mac-64.png"     64
@@ -47,6 +54,8 @@ cat > "$SET/Contents.json" <<'JSON'
 {
   "images" : [
     { "filename" : "icon-ios-1024.png", "idiom" : "universal", "platform" : "ios", "size" : "1024x1024" },
+    { "filename" : "icon-ios-1024-dark.png", "idiom" : "universal", "platform" : "ios", "size" : "1024x1024",
+      "appearances" : [ { "appearance" : "luminosity", "value" : "dark" } ] },
     { "filename" : "icon-mac-16.png",   "idiom" : "mac", "scale" : "1x", "size" : "16x16" },
     { "filename" : "icon-mac-32.png",   "idiom" : "mac", "scale" : "2x", "size" : "16x16" },
     { "filename" : "icon-mac-32.png",   "idiom" : "mac", "scale" : "1x", "size" : "32x32" },

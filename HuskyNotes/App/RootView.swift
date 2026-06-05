@@ -12,15 +12,22 @@
 //
 
 import SwiftUI
+import SwiftData
 
 /// The root scene content.
 struct RootView: View {
+
+    @Environment(\.modelContext) private var modelContext
 
     /// The selected smart list (sidebar → note-list filter).
     @State private var selectedList: SmartList? = .all
 
     /// The selected note (note-list → editor).
     @State private var selectedNote: Note?
+
+    /// The id of a note that was *just created*, so the editor auto-focuses and
+    /// raises the keyboard for it — and only it. Cleared once consumed.
+    @State private var autoFocusNoteID: UUID?
 
     /// Sidebar column visibility for the split view.
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
@@ -36,12 +43,23 @@ struct RootView: View {
     #endif
 
     var body: some View {
+        rootContent
+            // Quick capture from the widget / Action Button: create + open a new
+            // note, optionally in the chosen folder.
+            .onReceive(NotificationCenter.default.publisher(for: .huskyCreateNote)) { note in
+                createQuickNote(folderName: note.userInfo?["folder"] as? String)
+            }
+    }
+
+    @ViewBuilder
+    private var rootContent: some View {
         #if os(iOS)
         if horizontalSizeClass == .compact {
             MobileRootView(
                 selectedList: $selectedList,
                 selectedNote: $selectedNote,
-                isFocusMode: $isFocusMode
+                isFocusMode: $isFocusMode,
+                autoFocusNoteID: $autoFocusNoteID
             )
         } else {
             splitView
@@ -49,6 +67,21 @@ struct RootView: View {
         #else
         splitView
         #endif
+    }
+
+    /// Creates a new note (optionally filed in `folderName`), selects it, and
+    /// flags it for auto-focus — the quick-capture entry point.
+    private func createQuickNote(folderName: String?) {
+        selectedList = .all
+        let note = Note(body: "# ")
+        note.recomputeTitle()
+        if let folderName, !folderName.isEmpty {
+            let folders = (try? modelContext.fetch(FetchDescriptor<Folder>())) ?? []
+            note.folder = folders.first { $0.name == folderName }
+        }
+        modelContext.insert(note)
+        autoFocusNoteID = note.id
+        selectedNote = note
     }
 
     /// The three-column split view used on macOS and iPad.
@@ -59,13 +92,13 @@ struct RootView: View {
                 .navigationSplitViewColumnWidth(min: 200, ideal: 240)
                 #endif
         } content: {
-            NoteListView(filter: selectedList ?? .all, selection: $selectedNote)
+            contentColumn
                 #if os(macOS)
                 .navigationSplitViewColumnWidth(min: 260, ideal: 320)
                 #endif
         } detail: {
             if let selectedNote {
-                NoteEditorView(note: selectedNote, isFocusMode: $isFocusMode)
+                NoteEditorView(note: selectedNote, isFocusMode: $isFocusMode, autoFocusNoteID: $autoFocusNoteID)
             } else {
                 emptyDetail
             }
@@ -79,6 +112,19 @@ struct RootView: View {
         }
         .onChange(of: selectedNote) { _, note in
             if note == nil, isFocusMode { isFocusMode = false }
+        }
+    }
+
+    /// The middle column: the aggregated To-Do list for `.todo`, otherwise the
+    /// filtered note list.
+    @ViewBuilder
+    private var contentColumn: some View {
+        if selectedList == .todo {
+            TodoListView()
+        } else {
+            NoteListView(filter: selectedList ?? .all,
+                         selection: $selectedNote,
+                         autoFocusNoteID: $autoFocusNoteID)
         }
     }
 
@@ -104,6 +150,7 @@ private struct MobileRootView: View {
     @Binding var selectedList: SmartList?
     @Binding var selectedNote: Note?
     @Binding var isFocusMode: Bool
+    @Binding var autoFocusNoteID: UUID?
 
     @Environment(ThemeStore.self) private var themeStore
     private var theme: Theme { themeStore.active }
@@ -113,23 +160,36 @@ private struct MobileRootView: View {
 
     private var sidebarWidth: CGFloat { 300 }
 
+    /// The content shown beside the sidebar: the aggregated To-Do list for
+    /// `.todo`, otherwise the filtered note list.
+    @ViewBuilder
+    private var contentColumn: some View {
+        if selectedList == .todo {
+            TodoListView()
+        } else {
+            NoteListView(filter: selectedList ?? .all,
+                         selection: $selectedNote,
+                         autoFocusNoteID: $autoFocusNoteID)
+        }
+    }
+
     var body: some View {
         ZStack(alignment: .leading) {
-            // Main content: the note list, pushing the editor on tap.
+            // Main content: the note list (or To-Do list), pushing the editor on tap.
             NavigationStack {
-                NoteListView(filter: selectedList ?? .all, selection: $selectedNote)
+                contentColumn
                     .toolbar {
                         ToolbarItem(placement: .topBarLeading) {
                             Button {
                                 open()
                             } label: {
-                                Label("Folders", systemImage: "sidebar.leading")
+                                Label("Sidebar", systemImage: "sidebar.leading")
                             }
                             .tint(theme.accent.swiftUIColor)
                         }
                     }
                     .navigationDestination(item: $selectedNote) { note in
-                        NoteEditorView(note: note, isFocusMode: $isFocusMode)
+                        NoteEditorView(note: note, isFocusMode: $isFocusMode, autoFocusNoteID: $autoFocusNoteID)
                     }
             }
 
@@ -150,7 +210,9 @@ private struct MobileRootView: View {
             .background(theme.surface.swiftUIColor)
             .offset(x: showSidebar ? 0 : -(sidebarWidth + 12))
             .shadow(color: .black.opacity(showSidebar ? 0.25 : 0), radius: 12, x: 2)
-            .gesture(closeDrag)
+            // Simultaneous (not exclusive) so it can't swallow row taps or the
+            // List's vertical scroll — only a deliberate leftward drag closes.
+            .simultaneousGesture(closeDrag)
         }
         .animation(.easeOut(duration: 0.25), value: showSidebar)
         // Selecting a different list returns to the list (pops the editor).
