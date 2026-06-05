@@ -74,6 +74,7 @@ final class ThemeDraft: Identifiable {
             codeText: HexColor(codeText),
             quoteBar: HexColor(quoteBar),
             selection: HexColor(selection),
+            syntax: nil,
             bodyFont: bodyFont,
             monoFont: monoFont,
             bodySize: bodySize,

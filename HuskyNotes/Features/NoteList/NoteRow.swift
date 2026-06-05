@@ -52,9 +52,20 @@ struct NoteRow: View {
                         .foregroundStyle(theme.textSecondary.swiftUIColor)
                 }
 
-                Text(note.modifiedAt, format: .relative(presentation: .named))
-                    .font(.caption2)
-                    .foregroundStyle(theme.textSecondary.swiftUIColor)
+                HStack(spacing: 6) {
+                    if let folder = note.folder {
+                        HStack(spacing: 3) {
+                            folderGlyph(folder)
+                            Text(folder.name.isEmpty ? "Folder" : folder.name)
+                                .lineLimit(1)
+                        }
+                        .font(.caption2)
+                        .foregroundStyle(folderColor(folder))
+                    }
+                    Text(note.modifiedAt, format: .relative(presentation: .named))
+                        .font(.caption2)
+                        .foregroundStyle(theme.textSecondary.swiftUIColor)
+                }
             }
 
             Spacer(minLength: 0)
@@ -65,6 +76,21 @@ struct NoteRow: View {
     /// Title to display, falling back to a placeholder for blank notes.
     private var displayTitle: String {
         note.title.isEmpty ? "New Note" : note.title
+    }
+
+    /// The folder's icon — its emoji if set, otherwise a colour-tinted glyph.
+    @ViewBuilder
+    private func folderGlyph(_ folder: Folder) -> some View {
+        if let emoji = folder.icon, !emoji.isEmpty {
+            Text(emoji)
+        } else {
+            Image(systemName: "folder.fill")
+        }
+    }
+
+    /// The folder's colour, falling back to the theme accent.
+    private func folderColor(_ folder: Folder) -> Color {
+        folder.colorHex.map { HexColor($0).swiftUIColor } ?? theme.accent.swiftUIColor
     }
 
     /// A one-line snippet: the body with its first (title) line removed.

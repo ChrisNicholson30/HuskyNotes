@@ -101,6 +101,7 @@ final class ThemeStore {
             codeText: base.codeText,
             quoteBar: base.quoteBar,
             selection: base.selection,
+            syntax: base.syntax,
             bodyFont: base.bodyFont,
             monoFont: base.monoFont,
             bodySize: base.bodySize,

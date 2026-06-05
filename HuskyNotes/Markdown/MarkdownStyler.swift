@@ -101,6 +101,12 @@ struct MarkdownStyler {
         //    everywhere except where the caret is.
         conceal(visitor.concealRanges, in: result, revealing: revealedRange)
 
+        // 3b. Heading markers (`#`) are hidden *always* — even on the active
+        //     line — so a note reads as just its styled heading (a fresh `# `
+        //     note shows an empty heading, not the raw marker). The `#` stays in
+        //     the source, so export and round-tripping are unaffected.
+        conceal(visitor.headingMarkerRanges, in: result, revealing: nil)
+
         // 4. List markers: style bullets and task checkboxes (`- [ ]` / `- [x]`)
         //    as monospace + accent affordances, and dim completed tasks. Kept as
         //    *visible text* (not image attachments) because editable TextKit 2
@@ -345,9 +351,13 @@ private struct StylingVisitor: MarkupWalker {
     /// attributed string's range semantics.
     private let ns: NSString
 
-    /// Collected ranges of syntax markers (e.g. `#`, `**`, `` ` ``, `[`…`](…)`),
+    /// Collected ranges of syntax markers (e.g. `**`, `` ` ``, `[`…`](…)`),
     /// to be concealed unless the caret sits on their line.
     private(set) var concealRanges: [NSRange] = []
+
+    /// Heading marker ranges (`#` runs + trailing space), concealed *always* so
+    /// headings read as plain styled titles regardless of the caret position.
+    private(set) var headingMarkerRanges: [NSRange] = []
 
     /// Collected list bullets / task checkboxes to render as inline glyphs.
     private(set) var listGlyphs: [ListGlyph] = []
@@ -368,8 +378,16 @@ private struct StylingVisitor: MarkupWalker {
 
     mutating func visitHeading(_ heading: Heading) {
         if let range = nsRange(for: heading) {
-            applyFontPreservingTraits(fonts.heading(level: heading.level), over: range)
+            let font = fonts.heading(level: heading.level)
+            applyFontPreservingTraits(font, over: range)
             target.addAttribute(.foregroundColor, value: theme.heading.platformColor, range: range)
+            // Pin a minimum line height to the heading font so the line keeps its
+            // full height even when the whole marker (`# `) is concealed — e.g. a
+            // brand-new, still-empty note — instead of collapsing to a tiny caret.
+            let style = NSMutableParagraphStyle()
+            style.lineHeightMultiple = CGFloat(theme.lineSpacing)
+            style.minimumLineHeight = font.pointSize * 1.2
+            target.addAttribute(.paragraphStyle, value: style, range: range)
             recordHeadingMarker(in: range)
         }
         descendInto(heading)
@@ -385,6 +403,16 @@ private struct StylingVisitor: MarkupWalker {
                 ],
                 range: range
             )
+            // Language-aware syntax colours overlaid on the block's source. The
+            // fence lines (``` / ~~~) contain no tokens, so they stay codeText.
+            let blockText = ns.substring(with: range)
+            for span in SyntaxHighlighter.spans(for: blockText, language: codeBlock.language) {
+                let absolute = NSRange(location: range.location + span.range.location, length: span.range.length)
+                guard absolute.location >= 0, absolute.location + absolute.length <= target.length else { continue }
+                target.addAttribute(.foregroundColor,
+                                    value: SyntaxHighlighter.color(for: span.kind, in: theme).platformColor,
+                                    range: absolute)
+            }
         }
         // Code blocks have no stylable inline children; do not descend.
     }
@@ -601,7 +629,7 @@ private struct StylingVisitor: MarkupWalker {
             let c = ns.character(at: i)
             if c == 32 || c == 9 { i += 1 } else { break } // space / tab
         }
-        concealRanges.append(NSRange(location: range.location, length: i - range.location))
+        headingMarkerRanges.append(NSRange(location: range.location, length: i - range.location))
     }
 
     /// Records the leading and trailing backtick runs of inline code.

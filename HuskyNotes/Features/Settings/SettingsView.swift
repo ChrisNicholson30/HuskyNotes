@@ -15,20 +15,51 @@ struct SettingsView: View {
 
     @Environment(ThemeStore.self) private var themeStore
 
+    #if os(iOS)
+    /// Dismisses the full-screen settings cover (the close button).
+    @Environment(\.dismiss) private var dismiss
+    #endif
+
     var body: some View {
         TabView {
-            NavigationStack { ThemeSettingsView() }
-                .tabItem { Label("Themes", systemImage: "paintpalette") }
+            NavigationStack {
+                ThemeSettingsView()
+                    #if os(iOS)
+                    .toolbar { closeButton }
+                    #endif
+            }
+            .tabItem { Label("Themes", systemImage: "paintpalette") }
 
-            NavigationStack { StorageSettingsView() }
-                .tabItem { Label("Storage", systemImage: "externaldrive") }
+            NavigationStack {
+                StorageSettingsView()
+                    #if os(iOS)
+                    .toolbar { closeButton }
+                    #endif
+            }
+            .tabItem { Label("Storage", systemImage: "externaldrive") }
         }
-        // Fixed sizing only suits the macOS Settings *window*. On iOS/iPadOS the
-        // sheet must lay out fluidly to the device width, so no min frame there.
+        // Fixed sizing only suits the macOS Settings *window*. On iOS/iPadOS
+        // settings fill the screen, so no min frame there.
         #if os(macOS)
         .frame(minWidth: 520, minHeight: 480)
         #endif
     }
+
+    #if os(iOS)
+    /// A leading "✕" that closes the full-screen settings (iOS/iPadOS).
+    @ToolbarContentBuilder
+    private var closeButton: some ToolbarContent {
+        ToolbarItem(placement: .topBarLeading) {
+            Button { dismiss() } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .symbolRenderingMode(.hierarchical)
+                    .font(.title2)
+                    .foregroundStyle(themeStore.active.textSecondary.swiftUIColor)
+            }
+            .accessibilityLabel("Close Settings")
+        }
+    }
+    #endif
 }
 
 /// iCloud sync, the continuous `.md` mirror, and one-shot export.

@@ -26,6 +26,12 @@ struct SidebarView: View {
     /// All tags, alphabetised. The inverse relationship lets us show counts.
     @Query(sort: \Tag.name, order: .forward) private var tags: [Tag]
 
+    /// User-created folders, in creation order.
+    @Query(sort: \Folder.createdAt, order: .forward) private var folders: [Folder]
+
+    /// SwiftData context for creating / deleting folders.
+    @Environment(\.modelContext) private var modelContext
+
     /// The active theme supplies every colour used below.
     @Environment(ThemeStore.self) private var themeStore
 
@@ -35,11 +41,37 @@ struct SidebarView: View {
     /// Whether the settings sheet is presented (iOS/iPadOS; macOS uses ⌘,).
     @State private var showSettings = false
 
+    /// Whether the new-folder sheet is presented.
+    @State private var isCreatingFolder = false
+
+    /// The folder currently being edited (drives the edit sheet).
+    @State private var editingFolder: Folder?
+
     var body: some View {
         List {
             Section {
                 ForEach(SmartList.fixed) { item in
                     row(for: item)
+                }
+            }
+
+            Section {
+                ForEach(folders) { folder in
+                    folderRow(for: folder)
+                }
+            } header: {
+                HStack {
+                    Text("Folders")
+                        .foregroundStyle(theme.textSecondary.swiftUIColor)
+                    Spacer()
+                    Button {
+                        isCreatingFolder = true
+                    } label: {
+                        Image(systemName: "plus")
+                            .foregroundStyle(theme.accent.swiftUIColor)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("New Folder")
                 }
             }
 
@@ -58,6 +90,14 @@ struct SidebarView: View {
         .background(theme.surface.swiftUIColor)
         .tint(theme.accent.swiftUIColor)
         .navigationTitle("Husky Notes")
+        .sheet(isPresented: $isCreatingFolder) {
+            FolderEditorView(folder: nil)
+                .environment(themeStore)
+        }
+        .sheet(item: $editingFolder) { folder in
+            FolderEditorView(folder: folder)
+                .environment(themeStore)
+        }
         #if os(iOS)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
@@ -66,11 +106,9 @@ struct SidebarView: View {
                 }
             }
         }
-        .sheet(isPresented: $showSettings) {
+        .fullScreenCover(isPresented: $showSettings) {
             SettingsView()
                 .environment(themeStore)
-                .presentationDetents([.medium, .large])
-                .presentationDragIndicator(.visible)
         }
         #endif
     }
@@ -98,5 +136,62 @@ struct SidebarView: View {
         .listRowBackground(
             (selection == item ? theme.accent.swiftUIColor.opacity(0.18) : theme.surface.swiftUIColor)
         )
+    }
+
+    /// A folder row: its emoji or colour-tinted glyph, name, selection state, and
+    /// a context menu to edit or delete it.
+    @ViewBuilder
+    private func folderRow(for folder: Folder) -> some View {
+        let item = SmartList.folder(folder)
+        Button {
+            selection = item
+            onSelect?()
+        } label: {
+            Label {
+                Text(folder.name.isEmpty ? "Untitled Folder" : folder.name)
+                    .foregroundStyle(theme.textPrimary.swiftUIColor)
+            } icon: {
+                folderIcon(folder)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .listRowBackground(
+            (selection == item ? theme.accent.swiftUIColor.opacity(0.18) : theme.surface.swiftUIColor)
+        )
+        .contextMenu {
+            Button { editingFolder = folder } label: {
+                Label("Edit Folder", systemImage: "pencil")
+            }
+            Button(role: .destructive) { delete(folder) } label: {
+                Label("Delete Folder", systemImage: "trash")
+            }
+        }
+    }
+
+    /// The folder's icon — its emoji if set, otherwise a colour-tinted glyph.
+    @ViewBuilder
+    private func folderIcon(_ folder: Folder) -> some View {
+        if let emoji = folder.icon, !emoji.isEmpty {
+            Text(emoji)
+        } else {
+            Image(systemName: "folder.fill")
+                .foregroundStyle(folderColor(folder))
+        }
+    }
+
+    /// The folder's colour, falling back to the theme accent.
+    private func folderColor(_ folder: Folder) -> Color {
+        folder.colorHex.map { HexColor($0).swiftUIColor } ?? theme.accent.swiftUIColor
+    }
+
+    /// Deletes a folder. Its notes survive (the relationship nullifies); if the
+    /// deleted folder was selected, fall back to All Notes.
+    private func delete(_ folder: Folder) {
+        if case .folder(let selected) = selection, selected.id == folder.id {
+            selection = .all
+        }
+        modelContext.delete(folder)
     }
 }

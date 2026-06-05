@@ -35,9 +35,17 @@ struct NoteEditorView: View {
     /// than on every keystroke (which would create tags for partial input).
     @State private var reconcileTask: Task<Void, Never>?
 
+    /// Handle to the live editor, so imports can insert a reference at the caret.
+    @State private var editorController = EditorController()
+
     /// Distraction-free focus mode, owned by ``RootView`` (which collapses the
     /// sidebar and list columns). The toolbar button toggles it.
     @Binding var isFocusMode: Bool
+
+    /// The id of a freshly-created note to auto-focus. When it matches this
+    /// note, the editor focuses and (on iOS) raises the keyboard, then clears it
+    /// so re-opening the note later doesn't pop the keyboard again.
+    @Binding var autoFocusNoteID: UUID?
 
     /// Whether the user has authenticated to view this locked note this session.
     @State private var isUnlocked = false
@@ -47,6 +55,9 @@ struct NoteEditorView: View {
 
     /// Whether the image importer is presented.
     @State private var isImportingImage = false
+
+    /// Whether the any-file importer is presented (PDFs and other documents).
+    @State private var isImportingFile = false
 
     #if os(iOS)
     /// The `.md` file currently being shared via the system share sheet.
@@ -62,7 +73,20 @@ struct NoteEditorView: View {
             }
         }
         // Re-lock when switching to a different note or leaving the editor.
-        .onChange(of: note.id) { _, _ in isUnlocked = false }
+        .onChange(of: note.id) { _, _ in
+            isUnlocked = false
+            focusIfNewlyCreated()
+        }
+    }
+
+    /// Focuses the editor (and raises the keyboard on iOS) only for a note that
+    /// was *just created* — matched by ``autoFocusNoteID`` — then clears the flag
+    /// so re-opening the note later won't pop the keyboard. Opening existing
+    /// notes never auto-focuses.
+    private func focusIfNewlyCreated() {
+        guard !note.isLocked, autoFocusNoteID == note.id else { return }
+        autoFocusNoteID = nil
+        DispatchQueue.main.async { editorController.focus() }
     }
 
     /// The editor itself, plus the attachments strip and toolbar.
@@ -76,7 +100,7 @@ struct NoteEditorView: View {
                         .frame(maxWidth: .infinity, alignment: .center)
                 }
             } else {
-                MarkdownEditor(text: bodyBinding, theme: theme)
+                MarkdownEditor(text: bodyBinding, theme: theme, controller: editorController)
                     // Cap the text column to a comfortable reading width on large
                     // (iPad/Mac) windows; fill edge-to-edge on compact iPhones.
                     .frame(maxWidth: readableWidth)
@@ -105,6 +129,12 @@ struct NoteEditorView: View {
                 ToolbarItem {
                     Button { isImportingImage = true } label: {
                         Label("Insert Image", systemImage: "photo.badge.plus")
+                    }
+                    .tint(theme.accent.swiftUIColor)
+                }
+                ToolbarItem {
+                    Button { isImportingFile = true } label: {
+                        Label("Insert File", systemImage: "doc.badge.plus")
                     }
                     .tint(theme.accent.swiftUIColor)
                 }
@@ -138,7 +168,10 @@ struct NoteEditorView: View {
             }
         }
         .fileImporter(isPresented: $isImportingImage, allowedContentTypes: [.image]) { result in
-            if case .success(let url) = result { importImage(at: url) }
+            if case .success(let url) = result { importAttachment(at: url) }
+        }
+        .fileImporter(isPresented: $isImportingFile, allowedContentTypes: [.pdf, .data]) { result in
+            if case .success(let url) = result { importAttachment(at: url) }
         }
         #if os(iOS)
         .sheet(item: $shareFile) { file in
@@ -146,6 +179,7 @@ struct NoteEditorView: View {
         }
         #endif
         .onChange(of: note.body) { _, _ in scheduleTagReconcile() }
+        .onAppear { focusIfNewlyCreated() }
         .onDisappear {
             flushTagReconcile()
             isUnlocked = false
@@ -200,19 +234,42 @@ struct NoteEditorView: View {
 
     // MARK: Attachments
 
-    /// Imports an image file as an `Attachment` owned by this note.
-    private func importImage(at url: URL) {
+    /// Imports any file (image, PDF, document, …) as an `Attachment` owned by
+    /// this note, recording its UTI and size for correct preview routing and
+    /// display. The bytes live in SwiftData external storage.
+    private func importAttachment(at url: URL) {
         let scoped = url.startAccessingSecurityScopedResource()
         defer { if scoped { url.stopAccessingSecurityScopedResource() } }
         guard let data = try? Data(contentsOf: url) else { return }
 
-        let attachment = Attachment(filename: url.lastPathComponent, data: data)
+        // Resolve the UTI from the file when possible, falling back to the
+        // extension, so the viewer can route PDFs to PDFKit and the rest to
+        // Quick Look.
+        let contentType = (try? url.resourceValues(forKeys: [.contentTypeKey]).contentType)?.identifier
+            ?? UTType(filenameExtension: url.pathExtension)?.identifier
+
+        let attachment = Attachment(
+            filename: url.lastPathComponent,
+            data: data,
+            contentType: contentType,
+            byteCount: data.count
+        )
         attachment.note = note
         modelContext.insert(attachment)
         var current = note.attachments ?? []
         current.append(attachment)
         note.attachments = current
         note.modifiedAt = Date()
+
+        // Drop a portable reference into the body at the caret (not the bottom),
+        // resolving to the exported `_attachments/` folder. Images embed; other
+        // files link.
+        let name = url.lastPathComponent
+        let encoded = name.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? name
+        let path = "_attachments/\(encoded)"
+        let isImage = contentType.flatMap { UTType($0)?.conforms(to: .image) } ?? false
+        let snippet = isImage ? "![\(name)](\(path))" : "[📄 \(name)](\(path))"
+        editorController.insert(snippet)
     }
 
     // MARK: Tag reconciliation

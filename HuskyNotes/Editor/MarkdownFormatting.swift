@@ -198,11 +198,150 @@ enum MarkdownFormatting {
         let newBlock = transformed.joined(separator: "\n")
         let m = NSMutableString(string: ns)
         m.replaceCharacters(in: line, with: newBlock)
+
+        // With a caret (no selection) on a single line, keep a *caret* positioned
+        // just past the marker so the user can type immediately — rather than
+        // selecting the whole line (which the next keystroke would overwrite,
+        // deleting the marker they just asked for).
+        if sel.length == 0, lines.count == 1 {
+            let prefixLen = (prefix as NSString).length
+            let caret = allPrefixed
+                ? max(line.location, sel.location - prefixLen) // removed: shift left
+                : sel.location + prefixLen                     // added: shift past marker
+            return Result(text: m as String, selection: NSRange(location: caret, length: 0))
+        }
+
+        // A real (multi-line or non-empty) selection: keep the block selected so
+        // re-applying the command toggles it cleanly.
         return Result(text: m as String,
                       selection: NSRange(location: line.location, length: (newBlock as NSString).length))
     }
 
+    // MARK: - List continuation (Return key)
+
+    /// Computes the result of pressing Return inside a list item, so lists
+    /// continue automatically:
+    ///
+    /// - On a list line **with content**, inserts a newline plus the next
+    ///   marker (`- `, the next ordered number, or an unchecked `- [ ] `),
+    ///   placing the caret ready to type the next item.
+    /// - On an **empty** list item (just the marker), ends the list by removing
+    ///   the marker and leaving a blank line.
+    ///
+    /// Returns `nil` when the caret isn't in a list item (or there's a ranged
+    /// selection), so the editor performs a normal newline.
+    static func handleReturn(text: String, selection: NSRange) -> Result? {
+        guard selection.length == 0 else { return nil }
+        let ns = text as NSString
+        let caret = min(max(selection.location, 0), ns.length)
+
+        let lineRange = lineRangeTrimmingTerminator(ns, NSRange(location: caret, length: 0))
+        let line = ns.substring(with: lineRange)
+        guard let marker = listMarker(of: line) else { return nil }
+
+        let content = String(line.dropFirst(marker.lineMarker.count))
+        let m = NSMutableString(string: ns)
+
+        if content.trimmingCharacters(in: .whitespaces).isEmpty {
+            // Empty item → end the list: clear this line's marker.
+            m.replaceCharacters(in: lineRange, with: "")
+            return Result(text: m as String,
+                          selection: NSRange(location: lineRange.location, length: 0))
+        }
+
+        // Non-empty item → continue: newline + the next marker at the caret.
+        let insertion = "\n" + marker.continuation
+        m.insert(insertion, at: caret)
+        let newCaret = caret + (insertion as NSString).length
+        return Result(text: m as String, selection: NSRange(location: newCaret, length: 0))
+    }
+
+    /// A parsed list marker on one line: the exact prefix present on this line
+    /// and the prefix to emit for the *next* item.
+    private struct ListMarker {
+        /// This line's leading marker, e.g. `"- "`, `"  1. "`, `"- [x] "`.
+        let lineMarker: String
+        /// The marker to insert for the following item (ordered number bumped,
+        /// task boxes reset to unchecked), indentation preserved.
+        let continuation: String
+    }
+
+    /// Detects a leading list marker on `line` (bullet `-`/`*`/`+`, ordered
+    /// `N.`/`N)`, or a `- [ ]`/`- [x]` task), or `nil` if the line isn't a list
+    /// item.
+    private static func listMarker(of line: String) -> ListMarker? {
+        var idx = line.startIndex
+        while idx < line.endIndex, line[idx] == " " || line[idx] == "\t" {
+            idx = line.index(after: idx)
+        }
+        let indent = String(line[line.startIndex..<idx])
+        guard idx < line.endIndex else { return nil }
+        let first = line[idx]
+
+        // Ordered: one or more digits, then "." or ")", then a space.
+        if first.isNumber {
+            var j = idx
+            var digits = ""
+            while j < line.endIndex, line[j].isNumber {
+                digits.append(line[j])
+                j = line.index(after: j)
+            }
+            guard j < line.endIndex, line[j] == "." || line[j] == ")" else { return nil }
+            let delim = line[j]
+            let afterDelim = line.index(after: j)
+            guard afterDelim < line.endIndex, line[afterDelim] == " " else { return nil }
+            let lineMarker = indent + digits + String(delim) + " "
+            let next = (Int(digits) ?? 0) + 1
+            return ListMarker(lineMarker: lineMarker,
+                              continuation: indent + "\(next)" + String(delim) + " ")
+        }
+
+        // Unordered (and task) bullets: "-", "*", "+", then a space.
+        if first == "-" || first == "*" || first == "+" {
+            let afterBullet = line.index(after: idx)
+            guard afterBullet < line.endIndex, line[afterBullet] == " " else { return nil }
+
+            // Optional task box: "[ ] " / "[x] " / "[X] " right after the bullet.
+            let boxStart = line.index(after: afterBullet)
+            if let contentStart = taskBoxEnd(line, from: boxStart) {
+                let lineMarker = String(line[line.startIndex..<contentStart])
+                return ListMarker(lineMarker: lineMarker,
+                                  continuation: indent + String(first) + " [ ] ")
+            }
+
+            let lineMarker = indent + String(first) + " "
+            return ListMarker(lineMarker: lineMarker,
+                              continuation: indent + String(first) + " ")
+        }
+
+        return nil
+    }
+
+    /// If `line` has a `[ ]`/`[x]`/`[X]` task box followed by a space starting at
+    /// `start`, returns the index just past the trailing space; otherwise `nil`.
+    private static func taskBoxEnd(_ line: String, from start: String.Index) -> String.Index? {
+        guard start < line.endIndex, line[start] == "[" else { return nil }
+        let mark = line.index(after: start)
+        guard mark < line.endIndex, line[mark] == " " || line[mark] == "x" || line[mark] == "X" else { return nil }
+        let close = line.index(after: mark)
+        guard close < line.endIndex, line[close] == "]" else { return nil }
+        let space = line.index(after: close)
+        guard space < line.endIndex, line[space] == " " else { return nil }
+        return line.index(after: space)
+    }
+
     // MARK: - Insertions
+
+    /// Inserts an attachment reference (image/file Markdown) at the caret on its
+    /// own line — a leading newline is added when the caret isn't at the start of
+    /// a line, and a trailing newline follows — placing the caret after it.
+    static func insertAttachment(_ snippet: String, into text: String, at selection: NSRange) -> Result {
+        let ns = text as NSString
+        let sel = clamp(selection, length: ns.length)
+        let atLineStart = sel.location == 0 || ns.character(at: sel.location - 1) == 0x0A
+        let block = (atLineStart ? "" : "\n") + snippet + "\n"
+        return insertBlock(ns, sel, block: block)
+    }
 
     /// Inserts a block string (e.g. `\n---\n`) at the selection, replacing it,
     /// and places the caret after the inserted text.

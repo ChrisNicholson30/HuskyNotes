@@ -23,6 +23,29 @@
 
 import SwiftUI
 
+// MARK: - EditorController
+
+/// A lightweight handle that lets a parent view drive the live editor — e.g.
+/// inserting an attachment reference at the current caret. The editor's
+/// coordinator registers its implementation when the text view is created;
+/// calls made before that (or after teardown) are simply ignored.
+@MainActor
+final class EditorController {
+    /// Set by the coordinator; inserts Markdown at the caret / over the selection.
+    fileprivate var insertHandler: ((String) -> Void)?
+
+    /// Set by the coordinator; makes the editor first responder (opens the
+    /// keyboard on iOS).
+    fileprivate var focusHandler: (() -> Void)?
+
+    /// Inserts `markdown` at the current caret in the focused editor.
+    func insert(_ markdown: String) { insertHandler?(markdown) }
+
+    /// Focuses the editor so the user can type immediately (and the iOS keyboard
+    /// appears).
+    func focus() { focusHandler?() }
+}
+
 // MARK: - MarkdownEditor
 
 #if os(iOS)
@@ -36,6 +59,9 @@ struct MarkdownEditor: UIViewRepresentable {
 
     /// The active theme supplying every colour, font and metric.
     let theme: Theme
+
+    /// Optional handle for parent-driven insertion (e.g. attachments at caret).
+    var controller: EditorController? = nil
 
     func makeCoordinator() -> Coordinator {
         Coordinator(text: $text, theme: theme)
@@ -58,6 +84,12 @@ struct MarkdownEditor: UIViewRepresentable {
         textView.keyboardDismissMode = .interactive
 
         context.coordinator.textView = textView
+        controller?.insertHandler = { [weak coordinator = context.coordinator] markdown in
+            coordinator?.insertAtCaret(markdown)
+        }
+        controller?.focusHandler = { [weak textView] in
+            textView?.becomeFirstResponder()
+        }
 
         // A scrollable formatting toolbar above the keyboard (iPhone/iPad), since
         // the menu-bar Format commands only exist on macOS.
@@ -112,6 +144,9 @@ struct MarkdownEditor: NSViewRepresentable {
     /// The active theme supplying every colour, font and metric.
     let theme: Theme
 
+    /// Optional handle for parent-driven insertion (e.g. attachments at caret).
+    var controller: EditorController? = nil
+
     func makeCoordinator() -> Coordinator {
         Coordinator(text: $text, theme: theme)
     }
@@ -147,6 +182,13 @@ struct MarkdownEditor: NSViewRepresentable {
         scrollView.backgroundColor = theme.background.platformColor
 
         context.coordinator.textView = textView
+        controller?.insertHandler = { [weak coordinator = context.coordinator] markdown in
+            coordinator?.insertAtCaret(markdown)
+        }
+        controller?.focusHandler = { [weak textView] in
+            guard let textView else { return }
+            textView.window?.makeFirstResponder(textView)
+        }
         // Open with the caret at the end so a freshly created "# " note is ready
         // to type the title into.
         let caret = NSRange(location: (text as NSString).length, length: 0)
@@ -333,6 +375,34 @@ extension MarkdownEditor {
             perform(command, on: textView)
         }
 
+        /// Continues a Markdown list when Return is pressed inside a list item
+        /// (next bullet/number, or end the list on an empty item). Returns
+        /// `true` if it handled the newline; `false` to let the editor insert a
+        /// normal newline.
+        fileprivate func continueListOnReturn(in textView: PlatformTextView) -> Bool {
+            let current = currentText(of: textView)
+            let selection = currentSelection(of: textView)
+            guard let result = MarkdownFormatting.handleReturn(text: current, selection: selection) else {
+                return false
+            }
+            text.wrappedValue = result.text
+            apply(source: result.text, to: textView, selection: result.selection)
+            return true
+        }
+
+        /// Inserts an attachment reference (or any Markdown) at the caret,
+        /// placing it on its own line, then restyles. Driven by `EditorController`.
+        func insertAtCaret(_ markdown: String) {
+            guard let textView else { return }
+            let result = MarkdownFormatting.insertAttachment(
+                markdown,
+                into: currentText(of: textView),
+                at: currentSelection(of: textView)
+            )
+            text.wrappedValue = result.text
+            apply(source: result.text, to: textView, selection: result.selection)
+        }
+
         /// The shared formatting path: rewrite the source + selection and restyle.
         private func perform(_ command: MarkdownCommand, on textView: PlatformTextView) {
             let result = MarkdownFormatting.apply(
@@ -456,6 +526,27 @@ extension MarkdownEditor {
 
 #if os(iOS)
 extension MarkdownEditor.Coordinator: UITextViewDelegate {
+    /// Intercepts a plain Return to continue a list; all other edits proceed
+    /// normally.
+    func textView(_ textView: UITextView,
+                  shouldChangeTextIn range: NSRange,
+                  replacementText text: String) -> Bool {
+        guard text == "\n", textView.markedTextRange == nil else { return true }
+        // Only intercept when the caret is actually in a list item.
+        guard MarkdownFormatting.handleReturn(text: currentText(of: textView), selection: range) != nil else {
+            return true
+        }
+        // Defer the rewrite to the next runloop: mutating the text storage
+        // re-entrantly inside `shouldChangeTextIn` (while UIKit is mid-edit and
+        // we're cancelling its insert) can corrupt the text view's state. Block
+        // the default newline now; perform the list continuation a tick later.
+        DispatchQueue.main.async { [weak self, weak textView] in
+            guard let self, let textView else { return }
+            _ = self.continueListOnReturn(in: textView)
+        }
+        return false
+    }
+
     func textViewDidChange(_ textView: UITextView) {
         handleTextChanged(textView)
     }
@@ -466,6 +557,14 @@ extension MarkdownEditor.Coordinator: UITextViewDelegate {
 }
 #elseif os(macOS)
 extension MarkdownEditor.Coordinator: NSTextViewDelegate {
+    /// Intercepts the Return key to continue a list; returns `true` to consume
+    /// it, `false` to let `NSTextView` insert a normal newline.
+    func textView(_ textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
+        guard commandSelector == #selector(NSResponder.insertNewline(_:)),
+              !textView.hasMarkedText() else { return false }
+        return continueListOnReturn(in: textView)
+    }
+
     func textDidChange(_ notification: Notification) {
         guard let textView = notification.object as? NSTextView else { return }
         handleTextChanged(textView)

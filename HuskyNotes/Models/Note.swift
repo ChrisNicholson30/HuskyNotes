@@ -46,6 +46,12 @@ final class Note {
     @Relationship(deleteRule: .nullify, inverse: \Tag.notes)
     var tags: [Tag]? = []
 
+    /// The folder this note is filed in, if any. User-assigned (unlike ``tags``,
+    /// which are derived). Optional for CloudKit mirroring; nullified — not
+    /// cascaded — when the folder is deleted, so the note survives.
+    @Relationship(deleteRule: .nullify, inverse: \Folder.notes)
+    var folder: Folder? = nil
+
     /// Attachments owned by this note; deleted when the note is deleted.
     @Relationship(deleteRule: .cascade, inverse: \Attachment.note)
     var attachments: [Attachment]? = []

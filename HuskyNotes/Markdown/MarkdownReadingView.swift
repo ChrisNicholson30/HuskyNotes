@@ -57,7 +57,7 @@ struct MarkdownReadingView: View {
         case let quote as BlockQuote:
             return AnyView(quoteView(quote))
         case let code as CodeBlock:
-            return AnyView(codeView(code.code))
+            return AnyView(codeView(code.code, language: code.language))
         case let table as Markdown.Table:
             return AnyView(tableView(table))
         case is ThematicBreak:
@@ -92,8 +92,7 @@ struct MarkdownReadingView: View {
     @ViewBuilder
     private func marker(for item: ListItem, ordered: Bool, number: Int) -> some View {
         if let checkbox = item.checkbox {
-            Image(systemName: checkbox == .checked ? "checkmark.square.fill" : "square")
-                .foregroundStyle((checkbox == .checked ? theme.accent : theme.textSecondary).swiftUIColor)
+            taskCheckbox(checked: checkbox == .checked)
         } else if ordered {
             Text("\(number).")
                 .foregroundStyle(theme.textSecondary.swiftUIColor)
@@ -101,6 +100,36 @@ struct MarkdownReadingView: View {
         } else {
             Text("•").foregroundStyle(theme.accent.swiftUIColor)
         }
+    }
+
+    /// An Obsidian-style task checkbox: a rounded square with a muted border when
+    /// unchecked, and an accent fill with a white checkmark when checked. Sized
+    /// to the body font and centred on the first line of the item.
+    @ViewBuilder
+    private func taskCheckbox(checked: Bool) -> some View {
+        let side = CGFloat(theme.bodySize) * 1.05
+        let corner = side * 0.3
+        RoundedRectangle(cornerRadius: corner, style: .continuous)
+            .fill(checked ? theme.accent.swiftUIColor : .clear)
+            .overlay {
+                RoundedRectangle(cornerRadius: corner, style: .continuous)
+                    .strokeBorder(
+                        checked ? theme.accent.swiftUIColor : theme.textSecondary.swiftUIColor.opacity(0.55),
+                        lineWidth: 1.5
+                    )
+            }
+            .overlay {
+                if checked {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: side * 0.62, weight: .bold))
+                        .foregroundStyle(.white)
+                }
+            }
+            .frame(width: side, height: side)
+            // Centre the box on the line's text rather than sitting on the baseline.
+            .alignmentGuide(.firstTextBaseline) { dims in
+                dims[VerticalAlignment.center] + CGFloat(theme.bodySize) * 0.32
+            }
     }
 
     /// The inline text of a list item (its first paragraph).
@@ -127,13 +156,25 @@ struct MarkdownReadingView: View {
     }
 
     @ViewBuilder
-    private func codeView(_ code: String) -> some View {
-        Text(code.hasSuffix("\n") ? String(code.dropLast()) : code)
+    private func codeView(_ code: String, language: String?) -> some View {
+        let trimmed = code.hasSuffix("\n") ? String(code.dropLast()) : code
+        Text(highlightedCode(trimmed, language: language))
             .font(.system(.body, design: .monospaced))
-            .foregroundStyle(theme.codeText.swiftUIColor)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(10)
             .background(theme.codeBackground.swiftUIColor, in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    /// Builds a language-coloured `AttributedString` for a code block, falling
+    /// back to the plain code text colour for untokenised regions.
+    private func highlightedCode(_ code: String, language: String?) -> AttributedString {
+        var attributed = AttributedString(code)
+        attributed.foregroundColor = theme.codeText.swiftUIColor
+        for span in SyntaxHighlighter.spans(for: code, language: language) {
+            guard let range = Range(span.range, in: attributed) else { continue }
+            attributed[range].foregroundColor = SyntaxHighlighter.color(for: span.kind, in: theme).swiftUIColor
+        }
+        return attributed
     }
 
     // MARK: Tables
