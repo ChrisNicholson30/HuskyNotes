@@ -41,24 +41,35 @@ struct NoteListView: View {
     @Query(sort: \Note.modifiedAt, order: .reverse) private var allNotes: [Note]
 
     var body: some View {
-        List(selection: $selection) {
+        List {
             ForEach(filteredNotes) { note in
-                NoteRow(note: note)
-                    .tag(note)
-                    .swipeActions(edge: .leading, allowsFullSwipe: true) {
-                        pinButton(note)
-                    }
-                    .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                        trashButton(note)
-                        archiveButton(note)
-                    }
-                    .contextMenu {
-                        pinButton(note)
-                        archiveButton(note)
-                        lockButton(note)
-                        Divider()
-                        trashButton(note)
-                    }
+                Button {
+                    selection = note
+                } label: {
+                    NoteRow(note: note)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .listRowBackground(
+                    selection == note
+                        ? theme.accent.swiftUIColor.opacity(0.18)
+                        : theme.surface.swiftUIColor
+                )
+                .swipeActions(edge: .leading, allowsFullSwipe: true) {
+                    pinButton(note)
+                }
+                .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                    trashButton(note)
+                    archiveButton(note)
+                }
+                .contextMenu {
+                    pinButton(note)
+                    archiveButton(note)
+                    lockButton(note)
+                    Divider()
+                    trashButton(note)
+                }
             }
         }
         .scrollContentBackground(.hidden)

@@ -60,7 +60,6 @@ struct NoteRow: View {
             Spacer(minLength: 0)
         }
         .padding(.vertical, 4)
-        .listRowBackground(theme.surface.swiftUIColor)
     }
 
     /// Title to display, falling back to a placeholder for blank notes.

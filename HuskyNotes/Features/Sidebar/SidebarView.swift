@@ -19,6 +19,10 @@ struct SidebarView: View {
     /// The currently selected smart list (shared with the note-list column).
     @Binding var selection: SmartList?
 
+    /// Optional callback fired when a row is chosen — used by the iPhone
+    /// slide-over to dismiss itself after a selection.
+    var onSelect: (() -> Void)? = nil
+
     /// All tags, alphabetised. The inverse relationship lets us show counts.
     @Query(sort: \Tag.name, order: .forward) private var tags: [Tag]
 
@@ -32,11 +36,10 @@ struct SidebarView: View {
     @State private var showSettings = false
 
     var body: some View {
-        List(selection: $selection) {
+        List {
             Section {
                 ForEach(SmartList.fixed) { item in
                     row(for: item)
-                        .tag(item)
                 }
             }
 
@@ -44,7 +47,6 @@ struct SidebarView: View {
                 Section {
                     ForEach(tags) { tag in
                         row(for: .tag(tag))
-                            .tag(SmartList.tag(tag))
                     }
                 } header: {
                     Text("Tags")
@@ -73,15 +75,28 @@ struct SidebarView: View {
         #endif
     }
 
-    /// A single themed sidebar row for the given smart list.
+    /// A single themed, tappable sidebar row. A `Button` (rather than
+    /// `List(selection:)`) so it selects on tap in *any* container — the
+    /// split-view column and the iPhone slide-over alike.
     @ViewBuilder
     private func row(for item: SmartList) -> some View {
-        Label {
-            Text(item.title)
-                .foregroundStyle(theme.textPrimary.swiftUIColor)
-        } icon: {
-            Image(systemName: item.systemImage)
-                .foregroundStyle(theme.accent.swiftUIColor)
+        Button {
+            selection = item
+            onSelect?()
+        } label: {
+            Label {
+                Text(item.title)
+                    .foregroundStyle(theme.textPrimary.swiftUIColor)
+            } icon: {
+                Image(systemName: item.systemImage)
+                    .foregroundStyle(theme.accent.swiftUIColor)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
+        .listRowBackground(
+            (selection == item ? theme.accent.swiftUIColor.opacity(0.18) : theme.surface.swiftUIColor)
+        )
     }
 }
