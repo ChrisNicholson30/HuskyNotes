@@ -90,6 +90,7 @@ final class FormatAccessoryView: UIView {
         ("list.number", .orderedList, "Numbered list"),
         ("checklist", .todo, "To-do"),
         ("text.quote", .quote, "Quote"),
+        ("tablecells", .table, "Table"),
         ("link", .link, "Link")
     ]
 

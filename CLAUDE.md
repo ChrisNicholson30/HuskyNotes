@@ -21,6 +21,8 @@ the user.
     phased build plan with exit criteria.
   - [`resources/BUILD_PLAN.md`](resources/BUILD_PLAN.md) — the engineering build
     order: module contracts, the six themes, capabilities, per-version exit gates.
+  - [`resources/FEATURE_PLAN.md`](resources/FEATURE_PLAN.md) — scoped plan for
+    tables, file/PDF viewer, and link-with-thumbnail (phased, round-trip-safe).
   - [`resources/GETTING_STARTED.md`](resources/GETTING_STARTED.md) — kickoff
     guide: resources/accounts needed and the concrete first steps.
 

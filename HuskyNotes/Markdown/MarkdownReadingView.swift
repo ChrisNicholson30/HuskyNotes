@@ -143,30 +143,50 @@ struct MarkdownReadingView: View {
         let headCells = Array(table.head.cells)
         let rows = Array(table.body.rows)
         let columnCount = max(headCells.count, rows.map { Array($0.cells).count }.max() ?? 0)
+        let alignments = table.columnAlignments
 
-        Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 8) {
-            GridRow {
-                ForEach(0..<columnCount, id: \.self) { column in
-                    Text(column < headCells.count ? inline(headCells[column]) : AttributedString(""))
-                        .fontWeight(.semibold)
-                        .foregroundStyle(theme.heading.swiftUIColor)
-                }
-            }
-            Divider()
-                .overlay(theme.textSecondary.swiftUIColor.opacity(0.4))
-                .gridCellColumns(max(columnCount, 1))
-            ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
-                let cells = Array(row.cells)
+        // Horizontal scroll so wide tables don't clip on compact widths.
+        ScrollView(.horizontal, showsIndicators: false) {
+            Grid(alignment: .topLeading, horizontalSpacing: 16, verticalSpacing: 8) {
                 GridRow {
                     ForEach(0..<columnCount, id: \.self) { column in
-                        Text(column < cells.count ? inline(cells[column]) : AttributedString(""))
+                        Text(column < headCells.count ? inline(headCells[column]) : AttributedString(""))
+                            .fontWeight(.semibold)
+                            .foregroundStyle(theme.heading.swiftUIColor)
+                            // One cell per column sets that column's alignment.
+                            .gridColumnAlignment(columnAlignment(alignments, column))
+                    }
+                }
+                Divider()
+                    .overlay(theme.textSecondary.swiftUIColor.opacity(0.4))
+                    .gridCellColumns(max(columnCount, 1))
+                ForEach(Array(rows.enumerated()), id: \.offset) { index, row in
+                    let cells = Array(row.cells)
+                    GridRow {
+                        ForEach(0..<columnCount, id: \.self) { column in
+                            Text(column < cells.count ? inline(cells[column]) : AttributedString(""))
+                        }
+                    }
+                    if index < rows.count - 1 {
+                        Divider()
+                            .overlay(theme.textSecondary.swiftUIColor.opacity(0.15))
+                            .gridCellColumns(max(columnCount, 1))
                     }
                 }
             }
+            .padding(12)
+            .background(theme.surface.swiftUIColor, in: RoundedRectangle(cornerRadius: 8))
         }
-        .padding(12)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(theme.surface.swiftUIColor, in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    /// Maps a GFM column alignment to a SwiftUI grid-column alignment.
+    private func columnAlignment(_ alignments: [Markdown.Table.ColumnAlignment?], _ column: Int) -> HorizontalAlignment {
+        guard column < alignments.count else { return .leading }
+        switch alignments[column] {
+        case .center: return .center
+        case .right: return .trailing
+        default: return .leading
+        }
     }
 
     // MARK: Inline + fonts

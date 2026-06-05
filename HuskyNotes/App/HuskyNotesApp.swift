@@ -97,6 +97,7 @@ struct HuskyNotesApp: App {
                     .keyboardShortcut("t", modifiers: [.command, .control])
                 Button("Quote") { MarkdownCommand.quote.send() }
                     .keyboardShortcut("t", modifiers: [.command, .shift])
+                Button("Table") { MarkdownCommand.table.send() }
                 Divider()
                 Button("Line Separator") { MarkdownCommand.lineSeparator.send() }
                     .keyboardShortcut("s", modifiers: [.command, .option])

@@ -49,6 +49,8 @@ enum MarkdownCommand: Equatable, Sendable {
     case lineSeparator
     /// Insert today's date (`yyyy-MM-dd`).
     case currentDate
+    /// Insert a starter GFM table.
+    case table
 }
 
 extension Notification.Name {

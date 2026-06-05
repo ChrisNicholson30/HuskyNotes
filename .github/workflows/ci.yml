@@ -13,13 +13,15 @@ concurrency:
 jobs:
   build:
     name: Build (${{ matrix.platform }})
-    runs-on: macos-latest
+    # macos-15 ships Xcode 16 (iOS 18 / macOS 15 SDKs), which the deployment
+    # targets require. macos-latest can still be the older Xcode-15 image.
+    runs-on: macos-15
     strategy:
       fail-fast: false
       matrix:
         include:
           - platform: iOS
-            destination: "platform=iOS Simulator,name=iPhone 16,OS=latest"
+            destination: "generic/platform=iOS Simulator"
             scheme: HuskyNotes-iOS
           - platform: macOS
             destination: "platform=macOS"
@@ -29,16 +31,18 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Select Xcode
-        run: sudo xcode-select -switch /Applications/Xcode.app
+      - name: Select latest stable Xcode (has the iOS 18 / macOS 15 SDKs)
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
 
       - name: Show toolchain
         run: |
           xcodebuild -version
           swift --version
 
-      - name: Install XcodeGen
-        run: brew install xcodegen
+      - name: Install tools
+        run: brew install xcodegen xcbeautify
 
       - name: Generate Xcode project
         run: xcodegen generate
@@ -59,10 +63,6 @@ jobs:
             -skipPackagePluginValidation \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
-            | xcbeautify || xcodebuild build \
-              -project HuskyNotes.xcodeproj \
-              -scheme "${{ matrix.scheme }}" \
-              -destination "${{ matrix.destination }}" \
-              -skipPackagePluginValidation \
-              CODE_SIGNING_ALLOWED=NO \
-              CODE_SIGNING_REQUIRED=NO
+            CODE_SIGN_IDENTITY="" \
+            DEVELOPMENT_TEAM="" \
+            | xcbeautify

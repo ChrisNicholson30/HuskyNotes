@@ -45,7 +45,24 @@ enum MarkdownFormatting {
         case .quote:         return toggleLinePrefix(ns, sel, prefix: "> ")
         case .lineSeparator: return insertBlock(ns, sel, block: "\n---\n")
         case .currentDate:   return insertText(ns, sel, string: todayString())
+        case .table:         return insertTable(ns, sel)
         }
+    }
+
+    /// Inserts a starter 2×2 GFM table, placing the caret in the first header
+    /// cell. A blank line is added before the table when it doesn't already start
+    /// a line, so the table parses as its own block.
+    private static func insertTable(_ ns: NSString, _ sel: NSRange) -> Result {
+        let atLineStart = sel.location == 0 || ns.character(at: sel.location - 1) == 0x0A
+        let lead = atLineStart ? "" : "\n"
+        let table = "| Column | Column |\n| --- | --- |\n|  |  |\n"
+        let block = lead + table
+        let m = NSMutableString(string: ns)
+        m.replaceCharacters(in: sel, with: block)
+        // Select the first header label ("Column") so the user can type over it.
+        let headerStart = sel.location + (lead as NSString).length + 2 // after "| "
+        return Result(text: m as String,
+                      selection: NSRange(location: headerStart, length: 6))
     }
 
     // MARK: - Inline wrapping

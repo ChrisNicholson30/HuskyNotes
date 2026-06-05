@@ -114,6 +114,26 @@ targets:
         # CloudKit: iCloud + CloudKit + App Sandbox (macOS-specific entitlements file).
         CODE_SIGN_ENTITLEMENTS: HuskyNotes/App/HuskyNotes-macOS.entitlements
 
+# Shared schemes so both apps always have a buildable scheme (CI + local),
+# independent of Xcode's on-demand scheme autocreation.
+schemes:
+  HuskyNotes-iOS:
+    build:
+      targets:
+        HuskyNotes-iOS: all
+    run:
+      config: Debug
+    archive:
+      config: Release
+  HuskyNotes-macOS:
+    build:
+      targets:
+        HuskyNotes-macOS: all
+    run:
+      config: Debug
+    archive:
+      config: Release
+
 # Note on Resources: the `HuskyNotes/Resources` folder (including
 # Themes/*.json and SampleNotes/*.md) is picked up by the recursive
 # `sources` glob above and bundled as a copy-resources phase by XcodeGen,
