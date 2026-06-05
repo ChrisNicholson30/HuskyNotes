@@ -196,6 +196,11 @@ extension MarkdownEditor {
     /// Bridges the platform text view's editing callbacks back to SwiftUI and
     /// owns the (re-)styling of the text storage. Shared between the iOS and
     /// macOS representables — only the delegate conformance differs.
+    ///
+    /// `@MainActor` because every entry point (representable callbacks, text-view
+    /// delegate methods, gesture/menu handlers) runs on the main thread and
+    /// touches main-actor-isolated UIKit/AppKit views.
+    @MainActor
     final class Coordinator: NSObject {
 
         /// Two-way binding to the canonical Markdown source.
@@ -253,19 +258,42 @@ extension MarkdownEditor {
 
             #if os(iOS)
             let storage = textView.textStorage
-            storage.beginEditing()
-            storage.setAttributedString(styled)
-            storage.endEditing()
-            textView.selectedRange = clampedSelection(desired, length: styled.length)
             #elseif os(macOS)
             guard let storage = textView.textStorage else { return }
-            storage.beginEditing()
-            storage.setAttributedString(styled)
-            storage.endEditing()
-            textView.setSelectedRange(clampedSelection(desired, length: styled.length))
+            #endif
+
+            // When the characters are unchanged (every keystroke / theme switch),
+            // update only the *attributes* in place. Replacing the whole string
+            // tears down the insertion point on macOS — pressing Return would make
+            // the caret vanish until you clicked again.
+            restyle(storage, with: styled, sameCharacters: storage.string == source)
+
+            let clamped = clampedSelection(desired, length: styled.length)
+            #if os(iOS)
+            textView.selectedRange = clamped
+            #elseif os(macOS)
+            textView.setSelectedRange(clamped)
+            // Keep the caret visible and blinking after a restyle.
+            textView.updateInsertionPointStateAndRestartTimer(true)
             #endif
 
             styledTheme = theme
+        }
+
+        /// Applies `styled`'s attributes to `storage`. If the underlying string is
+        /// unchanged, only attributes are rewritten (preserving the insertion
+        /// point); otherwise the whole attributed string is replaced.
+        private func restyle(_ storage: NSTextStorage, with styled: NSAttributedString, sameCharacters: Bool) {
+            storage.beginEditing()
+            if sameCharacters {
+                let full = NSRange(location: 0, length: styled.length)
+                styled.enumerateAttributes(in: full, options: []) { attributes, range, _ in
+                    storage.setAttributes(attributes, range: range)
+                }
+            } else {
+                storage.setAttributedString(styled)
+            }
+            storage.endEditing()
         }
 
         /// Pulls the current text out of the view, publishes it to the binding,
@@ -348,14 +376,24 @@ extension MarkdownEditor {
             mutable.replaceCharacters(in: NSRange(location: markIndex, length: 1), with: newMark)
             let newText = mutable as String
 
+            // Toggling re-styles the whole document, which would otherwise scroll
+            // the view to the caret. Capture and restore the scroll position so
+            // the tapped line stays put.
+            let selection = currentSelection(of: textView)
+            #if os(iOS)
+            let savedOffset = textView.contentOffset
+            #endif
             text.wrappedValue = newText
-            apply(source: newText, to: textView, selection: currentSelection(of: textView))
+            apply(source: newText, to: textView, selection: selection)
+            #if os(iOS)
+            textView.setContentOffset(savedOffset, animated: false)
+            #endif
             return true
         }
 
         #if os(iOS)
         @objc fileprivate func handleCheckboxTap(_ gesture: UITapGestureRecognizer) {
-            guard let textView = textView as? UITextView else { return }
+            guard let textView else { return }
             let point = gesture.location(in: textView)
             guard let position = textView.closestPosition(to: point) else { return }
             let index = textView.offset(from: textView.beginningOfDocument, to: position)

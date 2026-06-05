@@ -18,14 +18,10 @@ import Markdown
 import AppKit
 /// Platform font type bridged for cross-platform attributed-string styling.
 typealias PlatformFont = NSFont
-/// Platform image type bridged for cross-platform attachment glyphs.
-typealias PlatformImage = NSImage
 #else
 import UIKit
 /// Platform font type bridged for cross-platform attributed-string styling.
 typealias PlatformFont = UIFont
-/// Platform image type bridged for cross-platform attachment glyphs.
-typealias PlatformImage = UIImage
 #endif
 
 /// A rendered list marker (bullet or task checkbox) and the syntax it replaces.
@@ -105,74 +101,46 @@ struct MarkdownStyler {
         //    everywhere except where the caret is.
         conceal(visitor.concealRanges, in: result, revealing: revealedRange)
 
-        // 4. List glyphs: render bullets and task checkboxes as inline images
-        //    (again, only off the active line so the raw syntax stays editable).
-        applyListGlyphs(visitor.listGlyphs, in: result, theme: theme, fonts: fonts, revealing: revealedRange)
+        // 4. List markers: style bullets and task checkboxes (`- [ ]` / `- [x]`)
+        //    as monospace + accent affordances, and dim completed tasks. Kept as
+        //    *visible text* (not image attachments) because editable TextKit 2
+        //    text views don't reliably render inline image attachments — the raw
+        //    `[ ]` reads clearly and stays tappable; Read mode shows true boxes.
+        applyListMarkers(visitor.listGlyphs, in: result, theme: theme, fonts: fonts)
 
         return result
     }
 
-    /// Renders collected list markers as inline image glyphs (bullets / task
-    /// checkboxes) and hides the raw `- [ ]` syntax, except on the active line.
-    private func applyListGlyphs(
+    /// Styles list markers so checkboxes/bullets read as affordances, and dims
+    /// completed task content.
+    private func applyListMarkers(
         _ glyphs: [ListGlyph],
         in target: NSMutableAttributedString,
         theme: Theme,
-        fonts: FontSet,
-        revealing revealedRange: NSRange?
+        fonts: FontSet
     ) {
         guard !glyphs.isEmpty else { return }
         let length = target.length
-        let size = CGFloat(theme.bodySize)
+        let accent = theme.accent.platformColor
 
         for glyph in glyphs {
-            // Completed-task styling (strike + dim) applies on every line.
+            // Completed-task content: strike through + dim.
             if glyph.strikeContent, let content = glyph.contentRange,
                content.location >= 0, content.location + content.length <= length, content.length > 0 {
                 target.addAttribute(.strikethroughStyle, value: NSUnderlineStyle.single.rawValue, range: content)
                 target.addAttribute(.foregroundColor, value: theme.textSecondary.platformColor, range: content)
             }
 
-            guard glyph.markerRange.location >= 0,
-                  glyph.markerRange.location + glyph.markerRange.length <= length
-            else { continue }
-
-            // Keep the raw markdown visible where the caret is, for editing.
-            if let revealedRange, NSIntersectionRange(glyph.markerRange, revealedRange).length > 0 {
-                continue
+            // The marker region — bullet, plus the `[ ]`/`[x]` for tasks.
+            let markerRegion: NSRange
+            if let conceal = glyph.concealRange {
+                markerRegion = NSRange(location: glyph.markerRange.location,
+                                       length: (conceal.location + conceal.length) - glyph.markerRange.location)
+            } else {
+                markerRegion = glyph.markerRange
             }
-
-            let image: PlatformImage?
-            switch glyph.kind {
-            case .bullet:
-                image = glyphImage(systemName: "circle.fill",
-                                   color: theme.textSecondary.platformColor,
-                                   pointSize: max(5, size * 0.42))
-            case .checkbox(let checked):
-                image = glyphImage(systemName: checked ? "checkmark.square.fill" : "square",
-                                   color: (checked ? theme.accent : theme.textSecondary).platformColor,
-                                   pointSize: size)
-            }
-
-            if let image {
-                let attachment = NSTextAttachment()
-                attachment.image = image
-                attachment.bounds = CGRect(x: 0, y: fonts.body.descender,
-                                           width: image.size.width, height: image.size.height)
-                target.addAttribute(.attachment, value: attachment, range: glyph.markerRange)
-            }
-
-            // Hide the " [ ]" task syntax (the kept trailing space separates the
-            // glyph from the text).
-            if let conceal = glyph.concealRange,
-               conceal.location >= 0, conceal.location + conceal.length <= length {
-                target.addAttributes(
-                    [.font: PlatformFont.systemFont(ofSize: 0.1),
-                     .foregroundColor: PlatformColor.clear,
-                     .backgroundColor: PlatformColor.clear],
-                    range: conceal
-                )
-            }
+            guard markerRegion.location >= 0, markerRegion.location + markerRegion.length <= length else { continue }
+            target.addAttributes([.foregroundColor: accent, .font: fonts.mono], range: markerRegion)
         }
     }
 
@@ -199,20 +167,6 @@ struct MarkdownStyler {
                 target.addAttribute(.foregroundColor, value: accent, range: match.range)
             }
         }
-    }
-
-    /// Creates a tinted SF Symbol image for an inline list glyph.
-    private func glyphImage(systemName: String, color: PlatformColor, pointSize: CGFloat) -> PlatformImage? {
-        #if os(macOS)
-        let config = NSImage.SymbolConfiguration(pointSize: pointSize, weight: .regular)
-            .applying(NSImage.SymbolConfiguration(paletteColors: [color]))
-        return NSImage(systemSymbolName: systemName, accessibilityDescription: nil)?
-            .withSymbolConfiguration(config)
-        #else
-        let config = UIImage.SymbolConfiguration(pointSize: pointSize, weight: .regular)
-        return UIImage(systemName: systemName, withConfiguration: config)?
-            .withTintColor(color, renderingMode: .alwaysOriginal)
-        #endif
     }
 
     /// Hides the given marker ranges by collapsing them to a near-zero, clear

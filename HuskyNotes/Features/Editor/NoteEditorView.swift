@@ -42,6 +42,9 @@ struct NoteEditorView: View {
     /// Whether the user has authenticated to view this locked note this session.
     @State private var isUnlocked = false
 
+    /// Whether the note is shown as a rendered, read-only view (tables, etc.).
+    @State private var isReading = false
+
     /// Whether the image importer is presented.
     @State private var isImportingImage = false
 
@@ -65,13 +68,22 @@ struct NoteEditorView: View {
     /// The editor itself, plus the attachments strip and toolbar.
     private var editor: some View {
         VStack(spacing: 0) {
-            MarkdownEditor(text: bodyBinding, theme: theme)
-                // Cap the text column to a comfortable reading width on large
-                // (iPad/Mac) windows; fill edge-to-edge on compact iPhones.
-                .frame(maxWidth: readableWidth)
-                .frame(maxWidth: .infinity)
-            if !(note.attachments ?? []).isEmpty {
-                AttachmentsBar(note: note)
+            if isReading {
+                ScrollView {
+                    MarkdownReadingView(markdown: note.body, theme: theme)
+                        .padding()
+                        .frame(maxWidth: readableWidth, alignment: .leading)
+                        .frame(maxWidth: .infinity, alignment: .center)
+                }
+            } else {
+                MarkdownEditor(text: bodyBinding, theme: theme)
+                    // Cap the text column to a comfortable reading width on large
+                    // (iPad/Mac) windows; fill edge-to-edge on compact iPhones.
+                    .frame(maxWidth: readableWidth)
+                    .frame(maxWidth: .infinity)
+                if !(note.attachments ?? []).isEmpty {
+                    AttachmentsBar(note: note)
+                }
             }
         }
         .background(theme.background.swiftUIColor)
@@ -103,6 +115,15 @@ struct NoteEditorView: View {
                     }
                     .tint(theme.accent.swiftUIColor)
                 }
+            }
+            ToolbarItem {
+                Button {
+                    isReading.toggle()
+                } label: {
+                    Label(isReading ? "Edit" : "Read",
+                          systemImage: isReading ? "pencil" : "book")
+                }
+                .tint(theme.accent.swiftUIColor)
             }
             ToolbarItem {
                 Button {
