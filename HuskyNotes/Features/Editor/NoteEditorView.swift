@@ -9,9 +9,8 @@
 
 import SwiftUI
 import UniformTypeIdentifiers
-#if os(iOS)
-import PhotosUI
-#elseif os(macOS)
+import PhotosUI            // PhotosPicker is available on iOS 16+ and macOS 13+
+#if os(macOS)
 import AppKit
 #endif
 
@@ -61,19 +60,18 @@ struct NoteEditorView: View {
     /// The attachment being previewed from an inline tap in reading mode.
     @State private var previewingAttachment: Attachment?
 
-    #if os(iOS)
-    /// Drives the photo-library picker (iOS adds photos from Photos, not Files).
+    /// Drives the Photos picker for inserting images (both platforms). PHPicker is
+    /// out-of-process, so it needs no photo-library permission prompt.
     @State private var isPickingPhoto = false
     /// The photo chosen from the library, pending import.
     @State private var pickedPhoto: PhotosPickerItem?
-    /// Whether the document scanner (camera) is presented.
+
+    #if os(iOS)
+    /// Whether the document scanner (camera) is presented (iOS only).
     @State private var isScanning = false
-    #else
-    /// Whether the image file importer is presented (macOS picks image files).
-    @State private var isImportingImage = false
     #endif
 
-    /// Whether the any-file importer is presented (PDFs and other documents).
+    /// Whether the file importer (PDFs / other documents) is presented.
     @State private var isImportingFile = false
 
     #if os(iOS)
@@ -163,13 +161,7 @@ struct NoteEditorView: View {
                     .tint(theme.accent.swiftUIColor)
                 }
                 ToolbarItem {
-                    Button {
-                        #if os(iOS)
-                        isPickingPhoto = true
-                        #else
-                        isImportingImage = true
-                        #endif
-                    } label: {
+                    Button { isPickingPhoto = true } label: {
                         Label("Insert Image", systemImage: "photo.badge.plus")
                     }
                     .tint(theme.accent.swiftUIColor)
@@ -217,8 +209,7 @@ struct NoteEditorView: View {
                 .tint(theme.accent.swiftUIColor)
             }
         }
-        #if os(iOS)
-        // Photos come from the photo library (not Files). PHPicker is
+        // Images come from the Photos library on both platforms. PHPicker is
         // out-of-process, so it needs no photo-library permission prompt.
         .photosPicker(isPresented: $isPickingPhoto, selection: $pickedPhoto, matching: .images)
         .onChange(of: pickedPhoto) { _, item in
@@ -226,11 +217,7 @@ struct NoteEditorView: View {
             pickedPhoto = nil
             importPhoto(item)
         }
-        #else
-        .fileImporter(isPresented: $isImportingImage, allowedContentTypes: [.image]) { result in
-            if case .success(let url) = result { importAttachment(at: url) }
-        }
-        #endif
+        // The file importer covers PDFs / other documents (images use the picker).
         .fileImporter(isPresented: $isImportingFile, allowedContentTypes: [.pdf, .data]) { result in
             if case .success(let url) = result { importAttachment(at: url) }
         }
@@ -338,11 +325,10 @@ struct NoteEditorView: View {
 
     // MARK: Attachments
 
-    #if os(iOS)
-    /// Imports a photo chosen from the library. The picker hands back opaque
-    /// `Data`; we stage it in a temp file (so the UTI/extension resolve) and run
-    /// it through the shared attachment path — which inserts the embed at the
-    /// caret, same as any other attachment.
+    /// Imports a photo chosen from the Photos library (both platforms). The picker
+    /// hands back opaque `Data`; we stage it in a temp file (so the UTI/extension
+    /// resolve) and run it through the shared attachment path — which inserts the
+    /// embed at the caret, same as any other attachment.
     private func importPhoto(_ item: PhotosPickerItem) {
         Task { @MainActor in
             guard let data = try? await item.loadTransferable(type: Data.self) else { return }
@@ -355,6 +341,7 @@ struct NoteEditorView: View {
         }
     }
 
+    #if os(iOS)
     /// Handles a finished document scan: writes the assembled PDF to a temp file
     /// and runs it through the shared attachment path (which embeds it and OCRs it).
     private func handleScan(_ data: Data?) {

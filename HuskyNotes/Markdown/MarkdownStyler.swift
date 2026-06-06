@@ -117,7 +117,7 @@ struct MarkdownStyler {
         //    reads like rendered Markdown. Emphasis/code/quote markers are hidden
         //    unconditionally; a link's markers are revealed only while the caret
         //    is inside it (so its URL stays editable). Returns the *trailing*
-        //    delimiters that got hidden (closing `**`, `` ` ``, …) so the editor
+        //    delimiters that got hidden (closing `**`, backtick, …) so the editor
         //    can skip Return/newlines past them rather than splitting the span.
         let trailingHiddenMarkers = concealSpans(visitor.concealRanges, in: result, caret: caret)
 
@@ -150,7 +150,7 @@ struct MarkdownStyler {
         /// Element ranges whose markers conceal/reveal with the caret (links) —
         /// the editor re-styles only when the caret crosses one, not on every move.
         let concealElements: [NSRange]
-        /// Ranges of concealed *trailing* delimiters (closing `**`, `` ` ``,
+        /// Ranges of concealed *trailing* delimiters (closing `**`, backtick,
         /// `</mark>`, …). Zero-width, so the caret rests just before them at a
         /// span's visual end; the editor skips Return past them so the closing
         /// marker isn't stranded on the next line.
@@ -269,7 +269,7 @@ struct MarkdownStyler {
     /// unconditionally. The backing string is never modified, so it round-trips.
     ///
     /// - Returns: the marker ranges that were hidden *and* sit at the trailing
-    ///   edge of their span (closing `**`, `` ` ``, …), so the editor can skip a
+    ///   edge of their span (closing `**`, backtick, …), so the editor can skip a
     ///   Return past them instead of splitting the span.
     private func concealSpans(_ spans: [ConcealSpan], in target: NSMutableAttributedString, caret: NSRange?) -> [NSRange] {
         var trailing: [NSRange] = []
@@ -445,7 +445,7 @@ struct ConcealSpan {
     let marker: NSRange
     let element: NSRange
     var revealOnCaret: Bool = false
-    /// `true` for a span's *closing* delimiter (the trailing `**`, `` ` ``, `~~`).
+    /// `true` for a span's *closing* delimiter (the trailing `**`, backtick, `~~`).
     /// Because it's concealed (zero-width), the caret rests just before it at the
     /// span's visual end; the editor uses this to skip a Return past it rather
     /// than splitting the span across a line.
@@ -468,7 +468,7 @@ private struct StylingVisitor: MarkupWalker {
     /// attributed string's range semantics.
     private let ns: NSString
 
-    /// Collected syntax markers (e.g. `**`, `` ` ``, `[`…`](…)`) paired with the
+    /// Collected syntax markers (e.g. `**`, backtick, `[`…`](…)`) paired with the
     /// element each belongs to, concealed unless the caret is inside that element.
     private(set) var concealRanges: [ConcealSpan] = []
 

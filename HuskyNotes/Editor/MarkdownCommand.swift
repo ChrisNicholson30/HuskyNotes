@@ -29,7 +29,7 @@ enum MarkdownCommand: Equatable, Sendable {
     case highlight(HighlightColor)
     /// Remove any highlighter wrapping the selection / caret.
     case removeHighlight
-    /// Toggle inline `` `code` ``.
+    /// Toggle an inline `code` span.
     case inlineCode
     /// Wrap the selection in a fenced code block.
     case codeBlock

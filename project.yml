@@ -38,6 +38,11 @@ settingGroups:
       ENABLE_USER_SCRIPT_SANDBOXING: YES
       GENERATE_INFOPLIST_FILE: YES
       INFOPLIST_KEY_CFBundleDisplayName: "Husky Notes"
+      # Export compliance: the app implements NO custom encryption — it only uses
+      # encryption built into Apple's OS (TLS/HTTPS for CloudKit, biometrics, data
+      # protection), which is exempt. Declaring this here bypasses the App Store
+      # Connect "App Encryption Documentation" prompt on every upload.
+      INFOPLIST_KEY_ITSAppUsesNonExemptEncryption: "NO"
       MARKETING_VERSION: "0.2.0"
       CURRENT_PROJECT_VERSION: "2"
       # Automatic signing; CI overrides with CODE_SIGNING_ALLOWED=NO.
@@ -75,7 +80,10 @@ targets:
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
         INFOPLIST_KEY_UISupportedInterfaceOrientations: "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
         # iPad must support all four orientations (multitasking) unless full-screen-only.
-        INFOPLIST_KEY_UISupportedInterfaceOrientations~ipad: "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
+        # NB: the build-setting suffix Xcode honours is `_iPad`, not the Info.plist
+        # `~ipad` form — using the latter is silently ignored, leaving iPad on the
+        # 3-orientation base and tripping the "all orientations" validation warning.
+        INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad: "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
         # Camera access for the document scanner (VNDocumentCameraViewController).
         INFOPLIST_KEY_NSCameraUsageDescription: "Husky Notes uses the camera to scan documents into your notes."
         # CloudKit + App Group entitlement (iOS-specific entitlements file).
@@ -183,7 +191,7 @@ schemes:
           value: com.huskynotes.app.widget.newnote
           isEnabled: true
 
-# Note on Resources: the `HuskyNotes/Resources` folder (including
-# Themes/*.json and SampleNotes/*.md) is picked up by the recursive
-# `sources` glob above and bundled as a copy-resources phase by XcodeGen,
-# because .json / .md are non-source files.
+# Note on Resources: the `HuskyNotes/Resources` folder (Themes/*.json,
+# Assets.xcassets) is picked up by the recursive `sources` glob above and
+# bundled as a copy-resources phase by XcodeGen. (The welcome/demo note lives in
+# code — App/WelcomeNote.swift — not as a bundled .md.)
