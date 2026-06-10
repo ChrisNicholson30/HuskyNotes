@@ -86,6 +86,13 @@ targets:
         INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad: "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
         # Camera access for the document scanner (VNDocumentCameraViewController).
         INFOPLIST_KEY_NSCameraUsageDescription: "Husky Notes uses the camera to scan documents into your notes."
+        # Background remote notifications — CloudKit's silent pushes that tell the
+        # app to pull synced changes. `UIBackgroundModes` isn't synthesised by
+        # GENERATE_INFOPLIST_FILE, so it lives in a partial Info.plist that Xcode
+        # merges its generated keys into. (Fixes "CloudKit push notifications
+        # require the 'remote-notification' background mode" and enables background
+        # sync instead of only-on-launch.)
+        INFOPLIST_FILE: HuskyNotes/App/Info-iOS.plist
         # CloudKit + App Group entitlement (iOS-specific entitlements file).
         CODE_SIGN_ENTITLEMENTS: HuskyNotes/App/HuskyNotes-iOS.entitlements
 
