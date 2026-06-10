@@ -2,111 +2,112 @@
 //  PersistenceController.swift
 //  HuskyNotes
 //
-//  Owns the SwiftData `ModelContainer`.
+//  Owns the SwiftData `ModelContainer` and the iCloud-sync state.
 //
-//  v0.1 is **local-only** — notes live in an on-device SQLite store and there is
-//  no sync. v0.2 turns on CloudKit by switching the `ModelConfiguration` to use
-//  `cloudKitDatabase: .private` (see the commented line below). The model types
-//  were written to the CloudKit mirroring rules from day one (every property
-//  defaulted, every relationship optional), so that switch is the only change.
+//  Sync is the user's own **private** CloudKit database, never a server. The
+//  controller is `@Observable`, so flipping sync on/off rebuilds the store and
+//  swaps it in **live** — no relaunch. Both the local and CloudKit stores use the
+//  same on-disk file, so existing notes simply begin mirroring (nothing is moved
+//  or duplicated). Sync defaults **on** when an iCloud identity is available, so a
+//  fresh install just works across the user's devices.
 //
 
 import Foundation
 import SwiftData
+import Observation
 
-/// Builds and vends the app's SwiftData container.
-///
-/// Use ``shared`` for the running app and ``preview`` for SwiftUI previews and
-/// tests (an in-memory container seeded with sample notes).
-struct PersistenceController {
+/// Builds, vends, and live-swaps the app's SwiftData container.
+@MainActor
+@Observable
+final class PersistenceController {
 
-    /// The container used by the live app.
-    static let shared = PersistenceController()
+    /// The shared instance used by the running app.
+    @MainActor static let shared = PersistenceController()
 
-    /// The SwiftData container backing the whole app.
-    let container: ModelContainer
+    /// The SwiftData container backing the whole app. Reassigned when sync is
+    /// toggled; reading it in a SwiftUI body re-injects the new store automatically.
+    private(set) var container: ModelContainer
 
-    /// Whether the container is mirroring to CloudKit (sync on) or local-only.
-    let isSyncing: Bool
+    /// Whether the current container is mirroring to CloudKit (sync active).
+    private(set) var isSyncing: Bool
 
-    /// The CloudKit container identifier for the private database.
+    /// The CloudKit container identifier for the user's private database.
     static let cloudKitContainerID = "iCloud.com.huskynotes.app"
 
-    /// UserDefaults key toggling iCloud sync (read at launch; relaunch to apply).
+    /// UserDefaults key recording the user's sync preference.
     static let syncEnabledKey = "huskynotes.syncEnabled"
 
     /// The full schema: every `@Model` type the app persists.
     private static let schema = Schema([Note.self, Tag.self, Folder.self, Attachment.self, TodoItem.self])
 
-    /// Creates a container.
-    ///
-    /// When iCloud sync is enabled (Settings → Storage) **and** the app is built
-    /// with the iCloud/CloudKit entitlement + container, the store mirrors to the
-    /// user's *private* CloudKit database. If the cloud container can't be
-    /// created (no entitlement, not signed into iCloud, etc.) we fall back to a
-    /// local store so the app always launches.
-    ///
-    /// - Parameter inMemory: when `true`, nothing is written to disk — used for
-    ///   previews and tests.
-    init(inMemory: Bool = false) {
-        let local = ModelConfiguration(schema: Self.schema, isStoredInMemoryOnly: inMemory)
+    init() {
+        let (container, syncing) = Self.makeContainer(sync: Self.syncPreferenceEnabled)
+        self.container = container
+        self.isSyncing = syncing
+    }
 
-        // Only attempt CloudKit when the user enabled it AND an iCloud identity is
-        // actually available. The identity token is non-nil only when the app has
-        // the iCloud entitlement and the user is signed in — so this avoids the
-        // async `NSCloudKitMirroringDelegate` setup trapping on unsigned builds,
-        // simulators with no iCloud account, or a misconfigured container.
-        let wantsSync = !inMemory
-            && UserDefaults.standard.bool(forKey: Self.syncEnabledKey)
-            && FileManager.default.ubiquityIdentityToken != nil
+    /// The user's sync preference. Defaults to **on** the first time (a notes app
+    /// should sync across devices out of the box), and is only honoured when an
+    /// iCloud identity is actually present (otherwise the store stays local).
+    static var syncPreferenceEnabled: Bool {
+        if UserDefaults.standard.object(forKey: syncEnabledKey) == nil { return true }
+        return UserDefaults.standard.bool(forKey: syncEnabledKey)
+    }
 
-        if wantsSync {
+    /// Whether iCloud is currently available (signed in + entitlement present).
+    var iCloudAvailable: Bool { FileManager.default.ubiquityIdentityToken != nil }
+
+    /// Turns sync on/off **live** — rebuilds the store on the same file with (or
+    /// without) CloudKit mirroring and swaps it in. No relaunch. `@Observable`
+    /// re-injects the new container; the posted notification lets the UI drop any
+    /// model object it was holding from the old store.
+    func setSyncEnabled(_ enabled: Bool) {
+        UserDefaults.standard.set(enabled, forKey: Self.syncEnabledKey)
+        let (container, syncing) = Self.makeContainer(sync: enabled)
+        self.container = container
+        self.isSyncing = syncing
+        NotificationCenter.default.post(name: .huskyStoreDidChange, object: nil)
+    }
+
+    // MARK: - Container building
+
+    /// Builds a container: CloudKit-mirrored when `sync` is on *and* an iCloud
+    /// identity exists, else local. Falls back to local (then in-memory) so the
+    /// app always launches. Returns the container and whether it's syncing.
+    private static func makeContainer(sync: Bool) -> (ModelContainer, Bool) {
+        // Only attempt CloudKit when sync is wanted AND an iCloud identity is
+        // available — the token is non-nil only with the entitlement + a signed-in
+        // user, which avoids the async mirroring delegate trapping otherwise.
+        if sync, FileManager.default.ubiquityIdentityToken != nil {
             let cloud = ModelConfiguration(
-                schema: Self.schema,
+                schema: schema,
                 isStoredInMemoryOnly: false,
-                cloudKitDatabase: .private(Self.cloudKitContainerID)
+                cloudKitDatabase: .private(cloudKitContainerID)
             )
-            if let container = try? ModelContainer(for: Self.schema, configurations: [cloud]) {
-                self.container = container
-                self.isSyncing = true
-                return
+            if let container = try? ModelContainer(for: schema, configurations: [cloud]) {
+                return (container, true)
             }
             // Couldn't stand up the cloud store — fall back to local below.
         }
 
-        // Try the on-disk (or in-memory) store.
-        if let container = try? ModelContainer(for: Self.schema, configurations: [local]) {
-            self.container = container
-            self.isSyncing = false
-            return
+        let local = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
+        if let container = try? ModelContainer(for: schema, configurations: [local]) {
+            return (container, false)
         }
 
-        // The store failed to open — most often an incompatible schema left by an
-        // earlier build. Rather than crash on every launch (a crash loop the user
-        // can't escape), move the old store aside — kept as a `.bak` so it can be
-        // recovered — and start fresh.
-        if !inMemory {
-            Self.relocateStore(at: local.url)
-            if let container = try? ModelContainer(for: Self.schema, configurations: [local]) {
-                self.container = container
-                self.isSyncing = false
-                return
-            }
+        // The store failed to open — most often an incompatible schema from an
+        // earlier build. Move it aside (kept as `.bak`) and start fresh rather than
+        // crash-loop.
+        relocateStore(at: local.url)
+        if let container = try? ModelContainer(for: schema, configurations: [ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)]) {
+            return (container, false)
         }
 
-        // Last resort: an in-memory store so the app still launches instead of
-        // crashing. Data won't persist, but the user isn't locked out.
-        if let memory = try? ModelContainer(
-            for: Self.schema,
-            configurations: [ModelConfiguration(schema: Self.schema, isStoredInMemoryOnly: true)]
-        ) {
-            self.container = memory
-            self.isSyncing = false
-            return
+        // Last resort: in-memory so the app still launches.
+        if let memory = try? ModelContainer(for: schema, configurations: [ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)]) {
+            return (memory, false)
         }
 
-        // Truly unrecoverable (cannot even build an in-memory store) — this
-        // effectively never happens.
         fatalError("Could not create any ModelContainer.")
     }
 
@@ -126,15 +127,11 @@ struct PersistenceController {
     /// An in-memory container seeded with a couple of sample notes, for previews.
     @MainActor
     static let preview: ModelContainer = {
-        let controller = PersistenceController(inMemory: true)
-        let context = controller.container.mainContext
+        let config = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)
+        let container = try! ModelContainer(for: schema, configurations: [config])
+        let context = container.mainContext
 
-        let welcome = Note(
-            body: WelcomeNote.markdown,
-            createdAt: .now,
-            modifiedAt: .now,
-            isPinned: true
-        )
+        let welcome = Note(body: WelcomeNote.markdown, createdAt: .now, modifiedAt: .now, isPinned: true)
         welcome.recomputeTitle()
         context.insert(welcome)
 
@@ -142,6 +139,12 @@ struct PersistenceController {
         scratch.recomputeTitle()
         context.insert(scratch)
 
-        return controller.container
+        return container
     }()
+}
+
+extension Notification.Name {
+    /// Posted when the SwiftData container is swapped (sync toggled), so views can
+    /// drop any model object held from the previous store.
+    static let huskyStoreDidChange = Notification.Name("huskynotes.storeDidChange")
 }

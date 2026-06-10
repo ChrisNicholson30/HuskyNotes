@@ -70,7 +70,7 @@ struct StorageSettingsView: View {
     @Environment(AppLock.self) private var appLock
     private var theme: Theme { themeStore.active }
 
-    @State private var syncEnabled = UserDefaults.standard.bool(forKey: PersistenceController.syncEnabledKey)
+    @State private var syncEnabled = PersistenceController.syncPreferenceEnabled
     @State private var mirrorEnabled = MirrorService.isEnabled
     @State private var mirrorFolder = MirrorService.folderDisplayPath
     @State private var isChoosingMirrorFolder = false
@@ -89,7 +89,9 @@ struct StorageSettingsView: View {
             Section("iCloud Sync") {
                 Toggle("Sync notes via iCloud", isOn: $syncEnabled)
                     .onChange(of: syncEnabled) { _, value in
-                        UserDefaults.standard.set(value, forKey: PersistenceController.syncEnabledKey)
+                        // Applies immediately — rebuilds the store with/without
+                        // CloudKit mirroring and swaps it in. No relaunch needed.
+                        PersistenceController.shared.setSyncEnabled(value)
                     }
                 Text(syncStatus)
                     .font(.footnote)
@@ -136,14 +138,18 @@ struct StorageSettingsView: View {
         }
     }
 
-    /// Human-readable sync status line.
+    /// Human-readable, reactive sync status line.
     private var syncStatus: String {
-        if PersistenceController.shared.isSyncing {
-            return "Syncing via your private iCloud database."
+        let persistence = PersistenceController.shared
+        if persistence.isSyncing {
+            return "On — syncing across your devices via your own private iCloud database."
+        }
+        if syncEnabled && !persistence.iCloudAvailable {
+            return "On, but iCloud is unavailable — sign into iCloud on this device to start syncing."
         }
         if syncEnabled {
-            return "Enabled — relaunch to apply. Requires the iCloud entitlement and your CloudKit container."
+            return "On — couldn't reach your iCloud container; using local storage for now."
         }
-        return "Off — notes are stored locally on this device."
+        return "Off — notes are stored only on this device."
     }
 }

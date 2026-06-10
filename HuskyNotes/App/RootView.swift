@@ -49,6 +49,12 @@ struct RootView: View {
             .onReceive(NotificationCenter.default.publisher(for: .huskyCreateNote)) { note in
                 createQuickNote(folderName: note.userInfo?["folder"] as? String)
             }
+            // iCloud sync was toggled and the store was swapped live — drop any
+            // selection held from the old container before its context tears down.
+            .onReceive(NotificationCenter.default.publisher(for: .huskyStoreDidChange)) { _ in
+                selectedNote = nil
+                selectedList = .all
+            }
     }
 
     @ViewBuilder

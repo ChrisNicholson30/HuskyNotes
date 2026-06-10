@@ -23,6 +23,10 @@ struct HuskyNotesApp: App {
     /// Optional whole-app Face ID / Touch ID lock.
     @State private var appLock = AppLock()
 
+    /// The SwiftData store. Observed here so that toggling iCloud sync (which
+    /// rebuilds the container) re-injects the new store **live**, no relaunch.
+    @State private var persistence = PersistenceController.shared
+
     /// Drives draining the Share Extension inbox when the app becomes active.
     @Environment(\.scenePhase) private var scenePhase
 
@@ -57,7 +61,9 @@ struct HuskyNotesApp: App {
                     }
                 }
         }
-        .modelContainer(PersistenceController.shared.container)
+        // Reading `persistence.container` here (an @Observable) re-injects the
+        // store whenever sync is toggled, so it applies live without a relaunch.
+        .modelContainer(persistence.container)
         #if os(macOS)
         .commands {
             // Placeholder for v1.0 menu commands (new note, export, focus mode…).
